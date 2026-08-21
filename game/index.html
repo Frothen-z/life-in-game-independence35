@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Life in Game</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css?v=city40">
+  <link rel="stylesheet" href="css/style.css?v=round1-1">
   <script type="importmap">
   {
     "imports": {
@@ -207,6 +207,19 @@
     <button type="button" id="btn-profile" class="hud-btn hidden">Профиль</button>
     <button type="button" id="btn-social" class="hud-btn hidden">Сообщество <span id="social-badge" class="hidden">0</span></button>
     <div id="players-online" class="players-online hidden">Онлайн: 1</div>
+    <section id="round1-hud" class="round1-hud hidden" aria-live="polite">
+      <div class="round1-hud-top">
+        <span id="round1-stage" class="round1-stage">РАУНД 1</span>
+        <span id="round1-counter" class="round1-counter">0 / 5</span>
+      </div>
+      <div id="round1-question" class="round1-question">Ожидание игроков...</div>
+      <div id="round1-status" class="round1-status">Соберитесь на стартовой площади</div>
+      <button type="button" id="round1-start" class="round1-start hidden">Начать раунд</button>
+    </section>
+    <div id="round1-waiting" class="round1-waiting hidden">
+      <strong>Вы выбыли из раунда</strong>
+      <span>Вы перемещены в зал ожидания и можете наблюдать за матчем.</span>
+    </div>
     <div id="toast"></div>
   </div>
   
@@ -425,6 +438,6 @@
 
   <canvas id="c"></canvas>
   <script src="../SETTINGS_HERE.js?v=1"></script>
-  <script type="module" src="js/main.js?v=city41"></script>
+  <script type="module" src="js/main.js?v=round1-1"></script>
 </body>
 </html>

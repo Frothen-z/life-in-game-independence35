@@ -2150,3 +2150,29 @@ html, body {
   .gov-tr { grid-template-columns: 1fr; gap: 4px; }
   .gov-card-full { width: 100%; max-height: 95vh; }
 }
+
+
+/* ===== ROUND 1: multiplayer elimination arena ===== */
+.round1-hud{
+  position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:45;
+  width:min(760px,calc(100vw - 32px));padding:14px 18px 16px;border-radius:18px;
+  background:linear-gradient(180deg,rgba(8,18,34,.94),rgba(8,18,34,.82));
+  border:1px solid rgba(125,211,252,.42);box-shadow:0 18px 48px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.08);
+  color:#fff;backdrop-filter:blur(14px);text-align:center;pointer-events:auto;
+}
+.round1-hud-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:7px}
+.round1-stage{font-weight:900;letter-spacing:.12em;font-size:13px;color:#7dd3fc}
+.round1-counter{font-weight:800;font-size:13px;color:#dbeafe}
+.round1-question{font-size:clamp(16px,2.1vw,24px);font-weight:850;line-height:1.2;text-wrap:balance}
+.round1-status{margin-top:7px;font-size:13px;color:#b9d9ee;font-weight:650}
+.round1-status.green{color:#86efac}.round1-status.red{color:#fca5a5}.round1-status.gold{color:#fde68a}
+.round1-start{margin-top:12px;border:0;border-radius:12px;padding:10px 18px;font-weight:900;cursor:pointer;
+  background:linear-gradient(135deg,#38bdf8,#2563eb);color:white;box-shadow:0 10px 30px rgba(37,99,235,.3)}
+.round1-start:disabled{opacity:.45;cursor:not-allowed}
+.round1-waiting{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:46;width:min(560px,calc(100vw - 32px));
+  padding:15px 20px;border-radius:16px;background:rgba(15,23,42,.94);border:1px solid rgba(248,113,113,.42);color:#fff;text-align:center;
+  box-shadow:0 18px 48px rgba(0,0,0,.34)}
+.round1-waiting strong{display:block;color:#fca5a5;font-size:18px}.round1-waiting span{display:block;margin-top:4px;color:#cbd5e1;font-size:13px}
+body.round1-mode #city-guide{display:none!important}
+body.round1-mode #btn-social{display:none!important}
+@media(max-width:700px){.round1-hud{top:8px;padding:11px 12px 12px;border-radius:14px}.round1-question{font-size:16px}.round1-status{font-size:12px}}

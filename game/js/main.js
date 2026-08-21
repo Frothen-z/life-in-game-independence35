@@ -12,6 +12,17 @@ import { createMediaRoom, isMediaSignal } from './services/media-room.js';
 import { sanitizeMafiaState } from './services/game-rules.js';
 import { initSocialUI, disposeSocialUI } from './social.js';
 import {
+  ROUND1_MIN_PLAYERS,
+  ROUND1_MAX_PLAYERS,
+  ROUND1_QUESTIONS,
+  checkpointFor,
+  evaluateCheckpoint,
+  chooseHostId,
+  createRoundState,
+  applyReport,
+  greenDurationMs
+} from './round1-game.js';
+import {
   CITY_DESTINATIONS,
   CITY_LAYOUT,
   districtAt,
@@ -39,6 +50,11 @@ const ROAD_HALF_W = 5.0; // no grass on asphalt strip
 const PLAYER_ACCELERATION = 7.5;
 const PLAYER_BRAKING = 10.5;
 const PLAYER_TURN_SPEED = Math.PI * 2.35;
+const ROUND1_ROOM_KEY = 'round1';
+const ROUND1_START_Z = -18;
+const ROUND1_WAITING = Object.freeze({ x: 41, z: 18 });
+const ROUND1_RED_GRACE_MS = 240;
+const ROUND1_RED_CHECK_MS = 1450;
 const WALK_CYCLE_DISTANCE = 1.35;
 const RUN_CYCLE_DISTANCE = 2.4;
 const MAX_FRAME_DELTA = 0.1;
@@ -120,6 +136,30 @@ let clothingMeshes = { look: [], shoes: [], body: [], hair: [] };
 let worldAnimators = [];
 let navigationTarget = null;
 let cityGuideLastUpdate = 0;
+let round1Arena = null;
+let round1Doll = null;
+let round1DateGroups = [];
+let round1QuestionBoard = null;
+let round1QuestionBoardKey = '';
+let round1State = null;
+let round1Members = [];
+let round1HostId = null;
+let round1HostTimer = 0;
+let round1LastStateBroadcast = 0;
+let round1LastPhaseKey = '';
+let round1LocalReportKey = '';
+let round1RedAnchor = null;
+let round1RedMaxMovement = 0;
+let round1RedStartedAt = 0;
+let round1StartButton = null;
+let round1Hud = null;
+let round1Status = null;
+let round1Question = null;
+let round1Counter = null;
+let round1WaitingNotice = null;
+let round1IsSpectator = false;
+let round1RoundFinished = false;
+let round1DebugBot = null;
 
 function hasCloudAccount() {
   return cloudEnabled && !!cloudSession?.user?.id && !currentUser?.isGuest;
@@ -760,9 +800,9 @@ async function initMultiplayer() {
     catch (error) { console.warn('multiplayer profile sync', error); }
   }
 
-  const roomId = (new URLSearchParams(location.search).get('room') || 'city-main')
+  const roomId = (new URLSearchParams(location.search).get('room') || 'round1-main')
     .replace(/[^a-zA-Z0-9_-]/g, '')
-    .slice(0, 32) || 'city-main';
+    .slice(0, 32) || 'round1-main';
 
   if (hasCloudAccount()) {
     try {
@@ -777,26 +817,40 @@ async function initMultiplayer() {
     }
   }
 
-  // Guest mode is intentionally solo. Never fall back to an unauthenticated
-  // public broker and pretend it is the real multiplayer.
-  showToast('Гостевой режим · мультиплеер доступен после входа');
-  if (onlineEl) onlineEl.textContent = 'Гость · одиночный режим';
+  // Guest mode remains solo in production. ?round1test=1 enables a local
+  // two-player simulation only for development/browser smoke tests.
+  if (new URLSearchParams(location.search).get('round1test') === '1') {
+    setupRound1DebugMode();
+    if (onlineEl) onlineEl.textContent = 'Тест: 2 игрока';
+    showToast('Тестовый режим Раунда 1 · 2 игрока');
+    return;
+  }
+  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок' }];
+  round1HostId = playerId;
+  updateRound1LobbyUI();
+  showToast('Гостевой режим · для сетевой игры войдите в аккаунт');
+  if (onlineEl) onlineEl.textContent = 'Гость · только вы';
 }
 
 async function connectSupabaseMultiplayer(roomId) {
   cityRoom = createRealtimeRoom({
     client: supabaseClient,
-    topic: `city:${roomId}`,
+    topic: `${ROUND1_ROOM_KEY}:${roomId}`,
     playerId,
     displayName: currentUser?.name,
-    presence: { feature: 'city' },
+    presence: { feature: ROUND1_ROOM_KEY },
     onMessage: (payload) => {
       if (!payload || Date.now() - (payload.t || 0) > 12000) return;
+      if (handleRound1Message(payload)) return;
       upsertRemotePlayer(payload);
       const entry = remotePlayers.get(payload.id);
       if (entry) entry.lastSeen = Date.now();
     },
     onPresence: (members) => {
+      round1Members = members;
+      round1HostId = chooseHostId(members.map((member) => String(member.id || member.key)));
+      updateRound1LobbyUI();
+      if (round1HostId === playerId && round1State) broadcastRound1State();
       const active = new Set(members.map((member) => String(member.id || member.key)));
       for (const [id, entry] of remotePlayers) {
         if (!active.has(id)) {
@@ -809,6 +863,9 @@ async function connectSupabaseMultiplayer(roomId) {
     }
   });
   await cityRoom.connect();
+  round1Members = cityRoom.members();
+  round1HostId = chooseHostId(round1Members.map((member) => String(member.id || member.key)));
+  updateRound1LobbyUI();
   p2pSend = (payload) => {
     cityRoom.send({ ...payload, id: playerId }).catch((error) => {
       console.warn('city realtime send', error);
@@ -817,6 +874,490 @@ async function connectSupabaseMultiplayer(roomId) {
   lifecycle.interval(() => broadcastPose(false), 250);
   lifecycle.interval(() => pruneRemotePlayers(), 2000);
   broadcastPose(true);
+}
+
+
+function setupRound1UI() {
+  document.body.classList.add('round1-mode');
+  round1Hud = document.getElementById('round1-hud');
+  round1Status = document.getElementById('round1-status');
+  round1Question = document.getElementById('round1-question');
+  round1Counter = document.getElementById('round1-counter');
+  round1StartButton = document.getElementById('round1-start');
+  round1WaitingNotice = document.getElementById('round1-waiting');
+  round1Hud?.classList.remove('hidden');
+  round1StartButton?.addEventListener('click', () => {
+    if (round1HostId !== playerId) return;
+    startRound1Match();
+  });
+  updateRound1LobbyUI();
+}
+
+function round1MemberIds() {
+  const ids = (round1Members || []).map((member) => String(member?.id || member?.key || '')).filter(Boolean);
+  if (playerId && !ids.includes(String(playerId))) ids.push(String(playerId));
+  if (round1DebugBot?.id && !ids.includes(round1DebugBot.id)) ids.push(round1DebugBot.id);
+  return [...new Set(ids)].slice(0, ROUND1_MAX_PLAYERS);
+}
+
+function round1LobbySpawnForId(id, ids = round1MemberIds()) {
+  const order = [...ids].sort();
+  const index = Math.max(0, order.indexOf(String(id)));
+  const angle = (-Math.PI / 2) + index * (Math.PI * 2 / Math.max(8, order.length));
+  const radius = 4.2;
+  const x = Math.cos(angle) * radius;
+  const z = -48 + Math.sin(angle) * radius;
+  return { x, y: 0.32, z, yaw: Math.atan2(-x, -28 - z) };
+}
+
+function placeLocalOnLobbySlot() {
+  if (!player || round1State) return;
+  const spawn = round1LobbySpawnForId(playerId);
+  if (Math.hypot(player.position.x - spawn.x, player.position.z - spawn.z) > 1.5) {
+    player.position.set(spawn.x, spawn.y, spawn.z);
+    yaw = spawn.yaw;
+    player.rotation.y = yaw;
+    currentSpeed = 0;
+    moveTarget = null;
+    lastPoseX = player.position.x;
+    lastPoseZ = player.position.z;
+    broadcastPose(true);
+  }
+}
+
+function updateRound1LobbyUI() {
+  if (!round1Hud || round1State?.phase && round1State.phase !== 'finished') return;
+  round1Hud.classList.remove('hidden');
+  const ids = round1MemberIds();
+  const count = ids.length;
+  const host = round1HostId || chooseHostId(ids);
+  placeLocalOnLobbySlot();
+  if (round1Question) round1Question.textContent = 'Раунд 1: исторические даты';
+  if (round1Counter) round1Counter.textContent = `${count} / ${ROUND1_MAX_PLAYERS} игроков`;
+  if (round1Status) {
+    round1Status.className = 'round1-status';
+    round1Status.textContent = count >= ROUND1_MIN_PLAYERS
+      ? (host === playerId ? 'Игроки готовы. Вы можете запустить тестовый матч.' : 'Ожидание запуска матча ведущим игроком.')
+      : `Нужно минимум ${ROUND1_MIN_PLAYERS} игрока. Сейчас в сети: ${count}.`;
+  }
+  if (round1StartButton) {
+    const isHost = host === playerId;
+    round1StartButton.classList.toggle('hidden', !isHost);
+    round1StartButton.disabled = count < ROUND1_MIN_PLAYERS;
+    round1StartButton.textContent = count < ROUND1_MIN_PLAYERS ? `Ожидание второго игрока (${count}/2)` : 'Начать Раунд 1';
+  }
+}
+
+function setupRound1DebugMode() {
+  round1DebugBot = { id: 'round1_debug_bot', name: 'Тестовый игрок' };
+  round1Members = [
+    { id: playerId, key: playerId, name: currentUser?.name || 'Игрок' },
+    { id: round1DebugBot.id, key: round1DebugBot.id, name: round1DebugBot.name }
+  ];
+  round1HostId = playerId;
+  upsertRemotePlayer({
+    id: round1DebugBot.id,
+    name: round1DebugBot.name,
+    x: 2.8,
+    y: 0.22,
+    z: -48,
+    rot: 0,
+    moving: 0,
+    avatar: null
+  });
+  updateRound1LobbyUI();
+}
+
+function round1SpawnForId(id, ids = round1MemberIds()) {
+  const order = [...ids].sort();
+  const index = Math.max(0, order.indexOf(String(id)));
+  const count = Math.max(1, order.length);
+  const spread = Math.min(24, Math.max(5, (count - 1) * 3.2));
+  const x = count === 1 ? 0 : -spread / 2 + (spread * index) / (count - 1);
+  return { x, y: 0.32, z: ROUND1_START_Z - 3.2, yaw: 0 };
+}
+
+function resetLocalRound1Flags() {
+  round1LocalReportKey = '';
+  round1RedAnchor = null;
+  round1RedMaxMovement = 0;
+  round1RedStartedAt = 0;
+  round1IsSpectator = false;
+  round1RoundFinished = false;
+  round1WaitingNotice?.classList.add('hidden');
+}
+
+function teleportLocalToRound1Start(state) {
+  if (!player || !state?.activeIds?.includes(String(playerId))) return;
+  const spawn = round1SpawnForId(playerId, state.activeIds);
+  player.visible = true;
+  player.position.set(spawn.x, spawn.y, spawn.z);
+  yaw = spawn.yaw;
+  player.rotation.y = yaw;
+  currentSpeed = 0;
+  velocityY = 0;
+  isGrounded = true;
+  moveTarget = null;
+  lastPoseX = player.position.x;
+  lastPoseZ = player.position.z;
+  broadcastPose(true);
+}
+
+function configureRound1Answers(seed) {
+  if (!round1Arena) return;
+  for (const entry of round1DateGroups) {
+    const checkpoint = checkpointFor(entry.checkpointIndex, seed);
+    const zone = checkpoint.zones.find((value) => value.lane === entry.lane);
+    if (!zone || zone.year === entry.year) continue;
+    entry.year = zone.year;
+    if (entry.year3d) round1Arena.remove(entry.year3d);
+    const year3d = createRound1Year3D(zone.year, 0x7dd3fc);
+    year3d.position.set(zone.x, 4.0, zone.z + 2.7);
+    year3d.rotation.y = Math.PI;
+    round1Arena.add(year3d);
+    entry.year3d = year3d;
+    try { entry.floorLabel.material.map?.dispose?.(); } catch {}
+    entry.floorLabel.material.map = makeSignTexture(String(zone.year), '', '#16283b', '#ffffff');
+    entry.floorLabel.material.needsUpdate = true;
+  }
+}
+
+function setRound1Status(text, mode = '') {
+  if (!round1Status) return;
+  round1Status.className = `round1-status${mode ? ` ${mode}` : ''}`;
+  round1Status.textContent = text;
+}
+
+function refreshRound1Visuals(now = Date.now()) {
+  if (!round1State) return;
+  const phase = round1State.phase;
+  const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
+  const total = ROUND1_QUESTIONS.length;
+  if (round1Counter) round1Counter.textContent = `${Math.min(total, round1State.checkpointIndex + 1)} / ${total}`;
+  if (round1Question) round1Question.textContent = phase === 'finished' ? 'Раунд завершён' : checkpoint.question;
+
+  round1DateGroups.forEach((entry) => {
+    const current = entry.checkpointIndex === round1State.checkpointIndex && phase !== 'finished';
+    if (entry.year3d) entry.year3d.visible = current;
+    if (entry.floorLabel) entry.floorLabel.visible = current;
+    const mat = entry.pad?.material;
+    if (!mat) return;
+    if (!current) {
+      mat.color.set(entry.checkpointIndex < round1State.checkpointIndex ? 0x315f46 : 0x334155);
+      mat.emissive.set(entry.checkpointIndex < round1State.checkpointIndex ? 0x14532d : 0x1d4ed8);
+      mat.emissiveIntensity = entry.checkpointIndex < round1State.checkpointIndex ? 0.2 : 0.08;
+      return;
+    }
+    const reveal = phase === 'red' && now >= Number(round1State.redCheckAt || Infinity);
+    if (reveal) {
+      const correct = entry.year === checkpoint.correctYear;
+      mat.color.set(correct ? 0x15803d : 0x7f1d1d);
+      mat.emissive.set(correct ? 0x22c55e : 0xef4444);
+      mat.emissiveIntensity = 0.7;
+    } else {
+      mat.color.set(0x334155);
+      mat.emissive.set(0x2563eb);
+      mat.emissiveIntensity = 0.26;
+    }
+  });
+
+  if (phase === 'countdown') {
+    const seconds = Math.max(0, Math.ceil((round1State.phaseEndsAt - now) / 1000));
+    setRound1Status(`Старт через ${seconds}… Приготовьтесь.`, 'gold');
+    setRound1QuestionBoard('ПРИГОТОВЬТЕСЬ', `старт через ${seconds}`);
+  } else if (phase === 'green') {
+    setRound1Status('НАБЛЮДАТЕЛЬ ОТВЕРНУЛСЯ — двигайтесь к правильной 3D-дате.', 'green');
+    setRound1QuestionBoard(`ВОПРОС ${round1State.checkpointIndex + 1}`, checkpoint.question);
+  } else if (phase === 'red') {
+    setRound1Status('СТОП! Не двигайтесь. Сейчас проверяется ваша позиция.', 'red');
+    setRound1QuestionBoard('СТОП', 'замрите на выбранной дате');
+  } else if (phase === 'finished') {
+    if (round1State.passedIds?.includes(String(playerId))) {
+      setRound1Status('Вы успешно прошли Раунд 1.', 'green');
+      if (round1Question) round1Question.textContent = 'РАУНД ПРОЙДЕН';
+    } else if (round1IsSpectator || round1State.eliminatedIds?.includes(String(playerId))) {
+      setRound1Status('Вы выбыли. Ожидайте завершения матча в зале ожидания.', 'red');
+    } else {
+      setRound1Status('Раунд 1 завершён.', 'gold');
+    }
+    setRound1QuestionBoard('РАУНД 1 ЗАВЕРШЁН', `${round1State.passedIds?.length || 0} игроков прошли дальше`);
+    if (round1StartButton && round1HostId === playerId && round1MemberIds().length >= ROUND1_MIN_PLAYERS) {
+      round1StartButton.classList.remove('hidden');
+      round1StartButton.disabled = false;
+      round1StartButton.textContent = 'Повторить Раунд 1';
+    }
+  }
+}
+
+function startRound1Match() {
+  const ids = round1MemberIds();
+  if (round1HostId !== playerId) return;
+  if (ids.length < ROUND1_MIN_PLAYERS) {
+    showToast(`Нужно минимум ${ROUND1_MIN_PLAYERS} игрока`);
+    return;
+  }
+  resetLocalRound1Flags();
+  const state = createRoundState(ids, Date.now());
+  state.hostId = playerId;
+  state.revision = 1;
+  round1HostId = playerId;
+  setRound1State(state, { force: true, localStart: true });
+  broadcastRound1State();
+}
+
+function setRound1State(incoming, options = {}) {
+  if (!incoming || typeof incoming !== 'object') return;
+  const currentRevision = Number(round1State?.revision || 0);
+  const incomingRevision = Number(incoming.revision || 0);
+  if (!options.force && round1State?.roundId === incoming.roundId && incomingRevision < currentRevision) return;
+  const previousRoundId = round1State?.roundId;
+  round1State = JSON.parse(JSON.stringify(incoming));
+  round1HostId = round1State.hostId || round1HostId;
+
+  if (previousRoundId !== round1State.roundId) {
+    resetLocalRound1Flags();
+    configureRound1Answers(round1State.seed);
+    if (round1State.activeIds?.includes(String(playerId))) teleportLocalToRound1Start(round1State);
+    if (round1DebugBot && round1State.activeIds?.includes(round1DebugBot.id)) {
+      const ent = remotePlayers.get(round1DebugBot.id);
+      const spawn = round1SpawnForId(round1DebugBot.id, round1State.activeIds);
+      if (ent) {
+        ent.group.position.set(spawn.x, spawn.y, spawn.z);
+        ent.target.set(spawn.x, spawn.y, spawn.z);
+      }
+    }
+  }
+
+  const phaseKey = `${round1State.roundId}:${round1State.checkpointIndex}:${round1State.phase}`;
+  if (phaseKey !== round1LastPhaseKey) {
+    round1LastPhaseKey = phaseKey;
+    round1LocalReportKey = '';
+    if (round1State.phase === 'red' && player && round1State.activeIds?.includes(String(playerId))) {
+      round1RedAnchor = player.position.clone();
+      round1RedMaxMovement = 0;
+      round1RedStartedAt = Date.now();
+    } else {
+      round1RedAnchor = null;
+      round1RedMaxMovement = 0;
+      round1RedStartedAt = 0;
+    }
+  }
+
+  if (round1State.eliminatedIds?.includes(String(playerId)) && !round1IsSpectator) {
+    performRound1Elimination('eliminated');
+  }
+  round1StartButton?.classList.add('hidden');
+  refreshRound1Visuals();
+}
+
+function broadcastRound1State() {
+  if (!round1State) return;
+  round1LastStateBroadcast = Date.now();
+  if (p2pSend) p2pSend({ type: 'round1_state', state: round1State });
+}
+
+function commitHostRound1State(nextState) {
+  if (!nextState || round1HostId !== playerId) return;
+  nextState.hostId = playerId;
+  nextState.revision = Number(round1State?.revision || 0) + 1;
+  setRound1State(nextState, { force: true });
+  broadcastRound1State();
+}
+
+function handleRound1Message(payload) {
+  if (!payload?.type || !String(payload.type).startsWith('round1_')) return false;
+  if (payload.type === 'round1_state') {
+    if (payload.state) {
+      const incomingState = JSON.parse(JSON.stringify(payload.state));
+      // Realtime messages carry the sender timestamp. Translate host absolute
+      // deadlines to this browser's clock so clients do not need identical
+      // system clocks for green/red timing.
+      const senderTime = Number(payload.t || 0);
+      if (senderTime > 0 && String(payload.from || '') !== String(playerId)) {
+        const clockShift = Date.now() - senderTime;
+        if (Number.isFinite(incomingState.phaseEndsAt)) incomingState.phaseEndsAt += clockShift;
+        if (Number.isFinite(incomingState.redCheckAt)) incomingState.redCheckAt += clockShift;
+      }
+      setRound1State(incomingState);
+    }
+    return true;
+  }
+  if (payload.type === 'round1_start_request') {
+    if (round1HostId === playerId && !round1State) startRound1Match();
+    return true;
+  }
+  if (payload.type === 'round1_report') {
+    if (round1HostId !== playerId || !round1State || round1State.phase !== 'red') return true;
+    const reporter = String(payload.id || payload.from || '');
+    const prior = [...(round1State.redActiveIds || round1State.activeIds || [])];
+    const next = applyReport(round1State, reporter, payload.report);
+    if (next !== round1State && next.reports?.[reporter] && !round1State.reports?.[reporter]) {
+      next.redActiveIds = prior;
+      commitHostRound1State(next);
+    }
+    return true;
+  }
+  return true;
+}
+
+function performRound1Elimination(reason = 'wrong') {
+  if (round1IsSpectator || !player) return;
+  round1IsSpectator = true;
+  round1WaitingNotice?.classList.remove('hidden');
+  setRound1Status(reason === 'movement' ? 'Вы двигались во время проверки и выбыли.' : 'Ответ или позиция неверны. Вы выбыли.', 'red');
+  currentSpeed = 0;
+  velocityY = 0;
+  moveTarget = null;
+  player.visible = false;
+  setTimeout(() => {
+    if (!player) return;
+    player.position.set(ROUND1_WAITING.x, 0.32, ROUND1_WAITING.z);
+    yaw = -Math.PI / 2;
+    player.rotation.y = yaw;
+    player.visible = true;
+    lastPoseX = player.position.x;
+    lastPoseZ = player.position.z;
+    broadcastPose(true);
+  }, 320);
+}
+
+function sendLocalRound1Report(report) {
+  const key = `${round1State?.roundId}:${round1State?.checkpointIndex}`;
+  if (!round1State || round1LocalReportKey === key) return;
+  round1LocalReportKey = key;
+  if (!report.pass) performRound1Elimination(report.reason);
+  const packet = {
+    type: 'round1_report',
+    id: playerId,
+    report: {
+      checkpointIndex: round1State.checkpointIndex,
+      pass: Boolean(report.pass),
+      reason: String(report.reason || '')
+    }
+  };
+  if (round1HostId === playerId) handleRound1Message({ ...packet, from: playerId, t: Date.now() });
+  else if (p2pSend) p2pSend(packet);
+}
+
+function updateRound1DebugBot(now) {
+  if (!round1DebugBot || !round1State?.activeIds?.includes(round1DebugBot.id)) return;
+  const ent = remotePlayers.get(round1DebugBot.id);
+  if (!ent) return;
+  const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
+  const correct = checkpoint.zones.find((zone) => zone.year === checkpoint.correctYear);
+  if (round1State.phase === 'green' && correct) {
+    ent.target.set(correct.x + 0.7, 0.32, correct.z);
+    ent.moving = 1;
+  } else if (round1State.phase === 'red') {
+    ent.group.position.copy(ent.target);
+    ent.moving = 0;
+    const botKey = `bot:${round1State.roundId}:${round1State.checkpointIndex}`;
+    if (!round1DebugBot.reportKey && now >= Number(round1State.redCheckAt || 0)) {
+      round1DebugBot.reportKey = botKey;
+      handleRound1Message({
+        type: 'round1_report',
+        id: round1DebugBot.id,
+        from: round1DebugBot.id,
+        t: now,
+        report: { checkpointIndex: round1State.checkpointIndex, pass: true, reason: 'correct' }
+      });
+    } else if (round1DebugBot.reportKey !== botKey && now >= Number(round1State.redCheckAt || 0)) {
+      round1DebugBot.reportKey = botKey;
+      handleRound1Message({
+        type: 'round1_report', id: round1DebugBot.id, from: round1DebugBot.id, t: now,
+        report: { checkpointIndex: round1State.checkpointIndex, pass: true, reason: 'correct' }
+      });
+    }
+  }
+}
+
+function updateRound1Game() {
+  if (!round1State || !player) return;
+  const now = Date.now();
+  refreshRound1Visuals(now);
+
+  if (round1State.phase === 'red' && round1State.activeIds?.includes(String(playerId)) && !round1IsSpectator) {
+    if (round1RedAnchor) {
+      const movement = Math.hypot(player.position.x - round1RedAnchor.x, player.position.z - round1RedAnchor.z);
+      round1RedMaxMovement = Math.max(round1RedMaxMovement, movement);
+    }
+    const reportKey = `${round1State.roundId}:${round1State.checkpointIndex}`;
+    if (now >= Number(round1State.redCheckAt || Infinity) && round1LocalReportKey !== reportKey) {
+      const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
+      const result = evaluateCheckpoint({
+        x: player.position.x,
+        z: player.position.z,
+        movedDistance: round1RedMaxMovement,
+        checkpoint,
+        movementLimit: 0.18
+      });
+      sendLocalRound1Report(result);
+    }
+  }
+
+  if (round1HostId !== playerId) return;
+  updateRound1DebugBot(now);
+
+  if (now - round1LastStateBroadcast > 1400) broadcastRound1State();
+  if (round1HostTimer && now < round1HostTimer) return;
+
+  if (round1State.phase === 'countdown' && now >= round1State.phaseEndsAt) {
+    const next = { ...round1State, phase: 'green', phaseEndsAt: now + greenDurationMs(round1State.seed, round1State.checkpointIndex), reports: {}, redActiveIds: null, redCheckAt: null };
+    round1HostTimer = now + 250;
+    commitHostRound1State(next);
+    return;
+  }
+
+  if (round1State.phase === 'green' && now >= round1State.phaseEndsAt) {
+    const redActiveIds = [...(round1State.activeIds || [])];
+    const redCheckAt = now + ROUND1_RED_GRACE_MS + ROUND1_RED_CHECK_MS;
+    const next = {
+      ...round1State,
+      phase: 'red',
+      phaseEndsAt: redCheckAt + 1300,
+      redCheckAt,
+      reports: {},
+      redActiveIds
+    };
+    round1HostTimer = now + 250;
+    commitHostRound1State(next);
+    return;
+  }
+
+  if (round1State.phase === 'red') {
+    const expected = round1State.redActiveIds || [];
+    const everyoneReported = expected.length === 0 || expected.every((id) => Boolean(round1State.reports?.[id]));
+    if (everyoneReported || now >= round1State.phaseEndsAt) {
+      // Anyone who failed to report before timeout is eliminated.
+      let next = { ...round1State, activeIds: [...round1State.activeIds], eliminatedIds: [...round1State.eliminatedIds], reports: { ...round1State.reports } };
+      for (const id of expected) {
+        if (!next.reports[id]) {
+          next = applyReport(next, id, { checkpointIndex: next.checkpointIndex, pass: false, reason: 'timeout' });
+        }
+      }
+      if (!next.activeIds.length) {
+        next.phase = 'finished';
+        next.phaseEndsAt = now;
+        next.passedIds = [];
+        next.winnerIds = [];
+      } else if (next.checkpointIndex >= ROUND1_QUESTIONS.length - 1) {
+        next.phase = 'finished';
+        next.phaseEndsAt = now;
+        next.passedIds = [...next.activeIds];
+        next.winnerIds = [...next.activeIds];
+      } else {
+        next.checkpointIndex += 1;
+        next.phase = 'green';
+        next.phaseEndsAt = now + greenDurationMs(next.seed, next.checkpointIndex);
+        next.reports = {};
+        next.redActiveIds = null;
+        next.redCheckAt = null;
+        if (round1DebugBot) round1DebugBot.reportKey = '';
+      }
+      round1HostTimer = now + 600;
+      commitHostRound1State(next);
+    }
+  }
 }
 
 function pruneRemotePlayers() {
@@ -890,7 +1431,7 @@ async function pushPresence() {
       y: player.position.y,
       z: player.position.z,
       rot: player.rotation.y,
-      room: 'city',
+      room: ROUND1_ROOM_KEY,
       updated_at: new Date().toISOString()
     });
   } catch (e) {}
@@ -903,7 +1444,7 @@ async function pullPresence() {
     const { data, error } = await supabaseClient
       .from('presence')
       .select('*')
-      .eq('room', 'city')
+      .eq('room', ROUND1_ROOM_KEY)
       .gt('updated_at', since);
     if (error || !data) return;
     const seen = new Set();
@@ -3740,11 +4281,13 @@ async function init() {
 
     setLoading('Загрузка персонажа...');
     await loadPlayer();
-    // Spawn on entertainment street
+    // Spawn all online players together on the round plaza
     if (player) {
       window.__playerRef = player;
-      player.position.set(0, 0.22, -9.5);
-      yaw = Math.PI; // face the central landmark and +Z entertainment street
+      const spawn = getRoundSpawnPoint(playerId || currentUser?.id || currentUser?.name || Math.random());
+      player.position.set(spawn.x, spawn.y, spawn.z);
+      yaw = spawn.yaw;
+      player.rotation.y = yaw;
     }
     clothingMeshes = { look: [], shoes: [], body: [], hair: [] };
     collectClothingMeshes(idleSkin);
@@ -3771,6 +4314,7 @@ async function init() {
       try { playerId = localStorage.getItem('ce_pid') || ('p_' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('ce_pid', playerId); }
       catch { playerId = 'p_' + Math.random().toString(36).slice(2, 10); }
     }
+    setupRound1UI();
     initClubs({
       get player() { return player; },
       get playerId() { return playerId; },
@@ -3805,7 +4349,7 @@ async function init() {
     // Прячем загрузку
     setTimeout(() => {
       if (loadingEl) loadingEl.classList.add('hidden');
-      showToast(isMobile || isTouchDevice() ? 'Улица клубов: свайп — обзор' : 'Клик по экрану — мышь. WASD — ходьба. Кнопка «Вид» — сверху');
+      showToast(isMobile || isTouchDevice() ? 'Раунд 1: свайп — обзор · джойстик — движение' : 'Раунд 1: WASD — движение · Shift — бег · выберите правильную 3D-дату');
     }, 300);
 
     animate();
@@ -4301,6 +4845,29 @@ function addWorldAnimator(callback) {
   if (typeof callback === 'function') worldAnimators.push(callback);
 }
 
+
+function simpleHash(value) {
+  const input = String(value || 'guest');
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) hash = ((hash * 31) + input.charCodeAt(i)) >>> 0;
+  return hash >>> 0;
+}
+
+function getRoundSpawnPoint(seedValue) {
+  const seed = simpleHash(seedValue);
+  const slot = seed % 8;
+  const angle = (-Math.PI / 2) + slot * (Math.PI / 4);
+  const radius = 4.2;
+  const x = Math.cos(angle) * radius;
+  const z = -48 + Math.sin(angle) * radius;
+  return {
+    x,
+    y: 0.22,
+    z,
+    yaw: Math.atan2(-x, -28 - z)
+  };
+}
+
 function makeCityMaterial(color, options = {}) {
   return new THREE.MeshStandardMaterial({
     color,
@@ -4585,14 +5152,361 @@ function createFutureDistrict(x, z, label, subtitle, color) {
   scene.add(group);
 }
 
+
+
+const ROUND1_DIGITS = Object.freeze({
+  '0': ['a','b','c','d','e','f'],
+  '1': ['b','c'],
+  '2': ['a','b','g','e','d'],
+  '3': ['a','b','c','d','g'],
+  '4': ['f','g','b','c'],
+  '5': ['a','f','g','c','d'],
+  '6': ['a','f','g','e','c','d'],
+  '7': ['a','b','c'],
+  '8': ['a','b','c','d','e','f','g'],
+  '9': ['a','b','c','d','f','g']
+});
+
+function createRound1Digit(char, material) {
+  const group = new THREE.Group();
+  const hGeo = new RoundedBoxGeometry(0.72, 0.13, 0.2, 2, 0.05);
+  const vGeo = new RoundedBoxGeometry(0.13, 0.64, 0.2, 2, 0.05);
+  const defs = {
+    a: [hGeo, 0, 0.72], g: [hGeo, 0, 0], d: [hGeo, 0, -0.72],
+    f: [vGeo, -0.38, 0.37], b: [vGeo, 0.38, 0.37],
+    e: [vGeo, -0.38, -0.37], c: [vGeo, 0.38, -0.37]
+  };
+  for (const key of ROUND1_DIGITS[String(char)] || []) {
+    const [geo, x, y] = defs[key];
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.set(x, y, 0);
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
+function createRound1Year3D(year, color = 0x7dd3fc) {
+  const group = new THREE.Group();
+  const material = makeCityMaterial(color, {
+    roughness: 0.26,
+    metalness: 0.25,
+    emissive: color,
+    emissiveIntensity: 0.72
+  });
+  const digits = String(year).split('');
+  digits.forEach((char, index) => {
+    const digit = createRound1Digit(char, material);
+    digit.position.x = (index - (digits.length - 1) / 2) * 1.02;
+    group.add(digit);
+  });
+  const backing = new THREE.Mesh(
+    new RoundedBoxGeometry(4.8, 2.3, 0.24, 4, 0.12),
+    makeCityMaterial(0x0b1729, { roughness: 0.35, metalness: 0.2 })
+  );
+  backing.position.z = -0.18;
+  group.add(backing);
+  group.userData.yearMaterial = material;
+  return group;
+}
+
+function setRound1QuestionBoard(title, subtitle = '') {
+  if (!round1QuestionBoard) return;
+  const key = `${title || ''}|${subtitle || ''}`;
+  if (round1QuestionBoardKey === key) return;
+  round1QuestionBoardKey = key;
+  try { round1QuestionBoard.material.map?.dispose?.(); } catch {}
+  const map = makeSignTexture(title || 'РАУНД 1', subtitle || '', '#071525', '#ffffff');
+  round1QuestionBoard.material.map = map;
+  round1QuestionBoard.material.needsUpdate = true;
+}
+
+function createRound1Doll() {
+  const doll = new THREE.Group();
+  doll.name = 'Round1Watcher';
+  const skinMat = makeCityMaterial(0xe7b98e, { roughness: 0.68 });
+  const darkMat = makeCityMaterial(0x182235, { roughness: 0.7 });
+  const dressMat = makeCityMaterial(0x2563eb, { roughness: 0.64 });
+  const accentMat = makeCityMaterial(0x38bdf8, { emissive: 0x38bdf8, emissiveIntensity: 0.34, roughness: 0.4 });
+
+  const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.7, 0.8, 28), darkMat);
+  pedestal.position.y = 0.4;
+  doll.add(pedestal);
+  const legs = [-0.55, 0.55].map((x) => {
+    const leg = new THREE.Mesh(new RoundedBoxGeometry(0.48, 2.6, 0.55, 3, 0.12), darkMat);
+    leg.position.set(x, 2.0, 0);
+    doll.add(leg);
+    return leg;
+  });
+  const body = new THREE.Mesh(new RoundedBoxGeometry(2.7, 3.6, 1.65, 5, 0.38), dressMat);
+  body.position.y = 4.7;
+  doll.add(body);
+  for (const x of [-1.7, 1.7]) {
+    const arm = new THREE.Mesh(new RoundedBoxGeometry(0.48, 3.2, 0.5, 3, 0.12), skinMat);
+    arm.position.set(x, 4.8, 0);
+    arm.rotation.z = x < 0 ? -0.08 : 0.08;
+    doll.add(arm);
+  }
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 0.55, 12), skinMat);
+  neck.position.y = 6.78;
+  doll.add(neck);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(1.28, 24, 18), skinMat);
+  head.scale.set(0.92, 1.06, 0.92);
+  head.position.y = 8.0;
+  doll.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(1.33, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.6), darkMat);
+  hair.position.set(0, 8.37, 0.14);
+  hair.rotation.x = Math.PI;
+  doll.add(hair);
+  for (const x of [-0.43, 0.43]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), darkMat);
+    eye.position.set(x, 8.08, -1.12);
+    doll.add(eye);
+  }
+  const sensor = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 9), accentMat);
+  sensor.position.set(0, 7.72, -1.18);
+  doll.add(sensor);
+
+  const label = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.2, 1.4),
+    new THREE.MeshBasicMaterial({ map: makeSignTexture('НАБЛЮДАТЕЛЬ', 'двигайтесь только когда он отвернулся', '#0b1729', '#ffffff'), transparent: true })
+  );
+  label.position.set(0, 10.7, 0);
+  doll.add(label);
+  doll.userData.sensorMaterial = accentMat;
+  return doll;
+}
+
+function createRoundOneArena() {
+  const arena = new THREE.Group();
+  arena.name = 'RoundOneArena';
+  round1Arena = arena;
+  round1DateGroups = [];
+
+  // Lobby / spawn plaza
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(16, 16.6, 0.28, 72),
+    makeCityMaterial(0xd8d1c3, { roughness: 0.86 })
+  );
+  base.position.set(0, 0.1, -48);
+  base.receiveShadow = true;
+  arena.add(base);
+  walkMeshes.push(base);
+
+  const ringA = new THREE.Mesh(
+    new THREE.RingGeometry(5.3, 14.4, 72),
+    makeCityMaterial(0xb7b0a2, { roughness: 0.93 })
+  );
+  ringA.rotation.x = -Math.PI / 2;
+  ringA.position.set(0, 0.245, -48);
+  arena.add(ringA);
+
+  const centerDisc = new THREE.Mesh(
+    new THREE.CylinderGeometry(4.6, 4.8, 0.16, 48),
+    makeCityMaterial(0x17324a, { metalness: 0.12, roughness: 0.48 })
+  );
+  centerDisc.position.set(0, 0.22, -48);
+  arena.add(centerDisc);
+
+  const lobbyTitle = new THREE.Mesh(
+    new THREE.PlaneGeometry(11.2, 2.2),
+    new THREE.MeshBasicMaterial({ map: makeSignTexture('СТАРТОВАЯ ПЛОЩАДЬ', 'игроки появляются здесь вместе', '#0b1729', '#ffffff'), transparent: true })
+  );
+  lobbyTitle.position.set(0, 5.0, -57.2);
+  lobbyTitle.rotation.y = Math.PI;
+  arena.add(lobbyTitle);
+
+  const fountainGlow = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.6, 2.8, 0.1, 32),
+    makeCityMaterial(0x53c7e8, { transparent: true, opacity: 0.72, roughness: 0.16, metalness: 0.12, emissive: 0x22d3ee, emissiveIntensity: 0.28 })
+  );
+  fountainGlow.position.set(0, 0.36, -48);
+  arena.add(fountainGlow);
+
+  for (let i = 0; i < ROUND1_MAX_PLAYERS; i += 1) {
+    const angle = (-Math.PI / 2) + i * (Math.PI / 4);
+    const pad = new THREE.Mesh(
+      new RoundedBoxGeometry(1.9, 0.14, 1.9, 3, 0.16),
+      makeCityMaterial(0x23405a, { emissive: 0x38bdf8, emissiveIntensity: 0.35, roughness: 0.55 })
+    );
+    pad.position.set(Math.cos(angle) * 4.2, 0.18, -48 + Math.sin(angle) * 4.2);
+    arena.add(pad);
+  }
+
+  // Gate into round one
+  const gate = new THREE.Group();
+  const frameMat = makeCityMaterial(0x142033, { metalness: 0.42, roughness: 0.34 });
+  const accentMat = makeCityMaterial(0x1d4ed8, { emissive: 0x60a5fa, emissiveIntensity: 0.55, roughness: 0.36 });
+  for (const x of [-5.6, 5.6]) {
+    const pillar = new THREE.Mesh(new RoundedBoxGeometry(0.82, 6.4, 0.92, 4, 0.18), frameMat);
+    pillar.position.set(x, 3.2, -28);
+    gate.add(pillar);
+    const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.82, 0.32, 16), accentMat);
+    glow.position.set(x, 0.16, -28);
+    gate.add(glow);
+  }
+  const arch = new THREE.Mesh(new RoundedBoxGeometry(12.3, 0.8, 0.92, 4, 0.18), frameMat);
+  arch.position.set(0, 6.25, -28);
+  gate.add(arch);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(8.4, 2.2),
+    new THREE.MeshBasicMaterial({ map: makeSignTexture('1 РАУНД', 'Даты Независимости', '#0b1729', '#ffffff'), transparent: true })
+  );
+  sign.position.set(0, 4.7, -27.5);
+  gate.add(sign);
+  arena.add(gate);
+
+  const lobbyPath = new THREE.Mesh(
+    new RoundedBoxGeometry(11, 0.12, 22, 4, 0.24),
+    makeCityMaterial(0xc8c0b2, { roughness: 0.92 })
+  );
+  lobbyPath.position.set(0, 0.06, -36);
+  lobbyPath.receiveShadow = true;
+  arena.add(lobbyPath);
+  walkMeshes.push(lobbyPath);
+
+  // Main elimination field
+  const field = new THREE.Mesh(
+    new RoundedBoxGeometry(38, 0.14, 98, 4, 0.35),
+    makeCityMaterial(0x6f8c72, { roughness: 0.98 })
+  );
+  field.position.set(0, 0.04, 27);
+  field.receiveShadow = true;
+  arena.add(field);
+  walkMeshes.push(field);
+
+  const track = new THREE.Mesh(
+    new RoundedBoxGeometry(31, 0.11, 94, 4, 0.28),
+    makeCityMaterial(0xd4cec2, { roughness: 0.92 })
+  );
+  track.position.set(0, 0.12, 27);
+  track.receiveShadow = true;
+  arena.add(track);
+  walkMeshes.push(track);
+
+  const startLine = new THREE.Mesh(
+    new RoundedBoxGeometry(31, 0.055, 0.45, 2, 0.05),
+    makeCityMaterial(0xf8fafc, { emissive: 0xe2e8f0, emissiveIntensity: 0.25, roughness: 0.5 })
+  );
+  startLine.position.set(0, 0.23, ROUND1_START_Z);
+  arena.add(startLine);
+
+  ROUND1_QUESTIONS.forEach((_, checkpointIndex) => {
+    const checkpoint = checkpointFor(checkpointIndex, 1);
+    const marker = new THREE.Mesh(
+      new RoundedBoxGeometry(31, 0.05, 0.16, 2, 0.03),
+      makeCityMaterial(0x94a3b8, { emissive: 0x64748b, emissiveIntensity: 0.16, roughness: 0.6 })
+    );
+    marker.position.set(0, 0.23, checkpoint.z - 4.8);
+    arena.add(marker);
+
+    checkpoint.zones.forEach((zone) => {
+      const pad = new THREE.Mesh(
+        new RoundedBoxGeometry(6.8, 0.18, 7.2, 4, 0.22),
+        makeCityMaterial(0x334155, { emissive: 0x1d4ed8, emissiveIntensity: 0.14, roughness: 0.56 })
+      );
+      pad.position.set(zone.x, 0.25, zone.z);
+      pad.receiveShadow = true;
+      arena.add(pad);
+      walkMeshes.push(pad);
+
+      const year3d = createRound1Year3D(zone.year, 0x7dd3fc);
+      year3d.position.set(zone.x, 4.0, zone.z + 2.7);
+      year3d.rotation.y = Math.PI;
+      year3d.visible = checkpointIndex === 0;
+      arena.add(year3d);
+
+      const floorLabel = new THREE.Mesh(
+        new THREE.PlaneGeometry(5.2, 2.1),
+        new THREE.MeshBasicMaterial({ map: makeSignTexture(String(zone.year), '', '#16283b', '#ffffff'), transparent: true, opacity: 0.92 })
+      );
+      floorLabel.rotation.x = -Math.PI / 2;
+      floorLabel.position.set(zone.x, 0.36, zone.z - 0.1);
+      floorLabel.visible = checkpointIndex === 0;
+      arena.add(floorLabel);
+
+      round1DateGroups.push({ checkpointIndex, lane: zone.lane, year: zone.year, pad, year3d, floorLabel });
+    });
+  });
+
+  round1QuestionBoard = new THREE.Mesh(
+    new THREE.PlaneGeometry(18, 4.4),
+    new THREE.MeshBasicMaterial({ map: makeSignTexture('РАУНД 1', 'ожидание старта', '#071525', '#ffffff'), transparent: true })
+  );
+  round1QuestionBoard.position.set(0, 8.2, 75.5);
+  round1QuestionBoard.rotation.y = Math.PI;
+  arena.add(round1QuestionBoard);
+
+  round1Doll = createRound1Doll();
+  round1Doll.position.set(0, 0, 82);
+  round1Doll.rotation.y = Math.PI; // green: looking away
+  arena.add(round1Doll);
+
+  // Waiting room for eliminated players
+  const waiting = new THREE.Group();
+  waiting.name = 'Round1WaitingRoom';
+  const waitingFloor = new THREE.Mesh(
+    new RoundedBoxGeometry(17, 0.18, 24, 4, 0.28),
+    makeCityMaterial(0x1e293b, { roughness: 0.8 })
+  );
+  waitingFloor.position.set(ROUND1_WAITING.x, 0.15, ROUND1_WAITING.z);
+  waiting.add(waitingFloor);
+  walkMeshes.push(waitingFloor);
+  const waitingTitle = new THREE.Mesh(
+    new THREE.PlaneGeometry(11, 2.4),
+    new THREE.MeshBasicMaterial({ map: makeSignTexture('ЗАЛ ОЖИДАНИЯ', 'наблюдение за оставшимися игроками', '#111827', '#ffffff'), transparent: true })
+  );
+  waitingTitle.position.set(ROUND1_WAITING.x, 5.4, ROUND1_WAITING.z - 10.6);
+  waiting.add(waitingTitle);
+  const glassMat = makeCityMaterial(0x7dd3fc, { transparent: true, opacity: 0.16, roughness: 0.08, metalness: 0.08, emissive: 0x38bdf8, emissiveIntensity: 0.16 });
+  for (const [x,z,w,d] of [
+    [ROUND1_WAITING.x - 8.3, ROUND1_WAITING.z, 0.18, 24],
+    [ROUND1_WAITING.x + 8.3, ROUND1_WAITING.z, 0.18, 24],
+    [ROUND1_WAITING.x, ROUND1_WAITING.z + 12, 17, 0.18]
+  ]) {
+    const wall = new THREE.Mesh(new RoundedBoxGeometry(w, 4.6, d, 2, 0.04), glassMat);
+    wall.position.set(x, 2.3, z);
+    waiting.add(wall);
+  }
+  arena.add(waiting);
+
+  // Plaza + arena lights, no trees/buildings from the old city.
+  const lightPositions = [
+    [-10,-52],[10,-52],[-10,-40],[10,-40],[-15,-12],[15,-12],[-15,15],[15,15],[-15,42],[15,42]
+  ];
+  lightPositions.forEach(([x,z]) => {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 4.3, 8), makeCityMaterial(0x152033, { metalness: 0.58, roughness: 0.35 }));
+    pole.position.set(x, 2.15, z);
+    arena.add(pole);
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), makeCityMaterial(0xffe4ad, { emissive: 0xffc45c, emissiveIntensity: 1.6, roughness: 0.25 }));
+    lamp.position.set(x, 4.35, z);
+    arena.add(lamp);
+  });
+
+  scene.add(arena);
+  addWorldAnimator((time, dt) => {
+    fountainGlow.material.opacity = 0.62 + Math.sin(time * 0.8) * 0.08;
+    if (round1Doll) {
+      const desired = round1State?.phase === 'red' ? 0 : Math.PI;
+      const delta = Math.atan2(Math.sin(desired - round1Doll.rotation.y), Math.cos(desired - round1Doll.rotation.y));
+      round1Doll.rotation.y += delta * Math.min(1, dt * 5.2);
+      const sensorMat = round1Doll.userData.sensorMaterial;
+      if (sensorMat) {
+        sensorMat.color.set(round1State?.phase === 'red' ? 0xef4444 : 0x38bdf8);
+        sensorMat.emissive.set(round1State?.phase === 'red' ? 0xef4444 : 0x38bdf8);
+      }
+    }
+  });
+}
+
 function createCity() {
   return new Promise((resolve) => {
     worldAnimators = [];
-    const gw = WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX + 28;
-    const gd = WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ + 28;
+    const gw = WORLD_BOUNDS.maxX - WORLD_BOUNDS.minX + 22;
+    const gd = WORLD_BOUNDS.maxZ - WORLD_BOUNDS.minZ + 22;
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(gw, gd),
-      makeCityMaterial(0x46624f, { roughness: 0.97 })
+      makeCityMaterial(0x62826f, { roughness: 0.98 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(
@@ -4604,69 +5518,17 @@ function createCity() {
     scene.add(ground);
     walkMeshes = [ground];
 
-    scene.fog = new THREE.Fog(0xa9c8d8, 82, 210);
-    scene.background = new THREE.Color(0x8fc7e5);
+    scene.fog = new THREE.Fog(0xc4d9e8, 90, 230);
+    scene.background = new THREE.Color(0xa9d2ec);
     loadSkybox();
     placeBoundaryWalls();
+    createRoundOneArena();
 
-    addPromenade({ x: 0, z: 15 }, { x: 0, z: 41 }, CITY_COLORS.entertainment, 8.2);
-    addPromenade({ x: 10.7, z: 10.7 }, { x: 27, z: 27 }, CITY_COLORS.restaurant, 7.4);
-    addPromenade({ x: 15, z: 0 }, { x: 34, z: 0 }, CITY_COLORS.government, 8);
-    addPromenade({ x: -15, z: 0 }, { x: -35, z: 0 }, CITY_COLORS.park, 7.4);
-    addPromenade({ x: 10.5, z: -10.5 }, { x: 25, z: -31 }, CITY_COLORS.education, 7.1);
-    addPromenade({ x: -10.5, z: -10.5 }, { x: -25, z: -31 }, CITY_COLORS.shopping, 7.1);
-
-    createSpawnPlaza();
-    addDistrictGateway('РАЗВЛЕЧЕНИЯ', 0, 23, CITY_COLORS.entertainment, 'клубы и игры');
-    addDistrictGateway('РЕСТОРАНЫ', 18, 18, CITY_COLORS.restaurant, 'встречи и кухня');
-    addDistrictGateway('ГОСУДАРСТВО', 25, 0, CITY_COLORS.government, 'цифровые сервисы');
-    addDistrictGateway('ПАРК', -25, 0, CITY_COLORS.park, 'спорт и отдых');
-    addDistrictGateway('ОБУЧЕНИЕ', 17, -20, CITY_COLORS.education, 'новый квартал');
-    addDistrictGateway('ШОПИНГ', -17, -20, CITY_COLORS.shopping, 'новый квартал');
-    createLandscape();
-    createCityLights();
-
-    try { placeMafiaClubBuilding(); } catch (error) { console.warn('[city] mafia', error); }
-    try { placeCinemaBuilding(); } catch (error) { console.warn('[city] cinema', error); }
-    const clubConfigs = [
-      {
-        kind: 'speaking', w: 8.7, h: 6.6, d: 7.2,
-        wall: 0xe6dfd2, accent: 0x2563eb, neon: 0x60a5fa,
-        title: 'SPEAKING', subtitle: 'Language Club'
-      },
-      {
-        kind: 'chess', w: 8.7, h: 6.3, d: 7.2,
-        wall: 0xebe6dc, accent: 0x111827, neon: 0xf8fafc,
-        title: 'ШАХМАТЫ', subtitle: 'Chess Club'
-      },
-      {
-        kind: 'monopoly', w: 8.7, h: 6.6, d: 7.2,
-        wall: 0xe5dfd1, accent: 0x059669, neon: 0x34d399,
-        title: 'МОНОПОЛИЯ', subtitle: 'Board Game'
-      }
-    ];
-    clubConfigs.forEach((config) => {
-      const layout = CITY_LAYOUT.venues[config.kind];
-      try { placeStreetClub({ ...config, x: layout.x, z: layout.z, rot: Math.PI }); }
-      catch (error) { console.warn(`[city] ${config.kind}`, error); }
-    });
-
-    try { placeRestaurantBuilding(); } catch (error) { console.warn('[city] restaurant', error); }
-    try {
-      const governmentStreet = createGovernmentStreet(scene, buildings);
-      if (Array.isArray(governmentStreet?.userData?.walkMeshes)) {
-        walkMeshes.push(...governmentStreet.userData.walkMeshes);
-      }
-    } catch (error) { console.warn('[city] government', error); }
-
-    createFutureDistrict(-42, 0, 'ПАРК И СПОРТ', 'открытое пространство', CITY_COLORS.park);
-    createFutureDistrict(-29, -37, 'ШОПИНГ', 'следующий релиз', CITY_COLORS.shopping);
-    createFutureDistrict(29, -37, 'ОБУЧЕНИЕ', 'следующий релиз', CITY_COLORS.education);
-
-    console.log('[city] Life in Game radial city ready');
+    console.log('[city] Round 1 lobby ready');
     resolve();
   });
 }
+
 
 
 function makeSignTexture(title, subtitle, bg = '#111', fg = '#fff') {
@@ -5737,6 +6599,12 @@ function updatePlayer(dt) {
     inputForward += -joyY;
   }
 
+  if (round1State?.phase === 'countdown' && round1State.activeIds?.includes(String(playerId))) {
+    inputX = 0;
+    inputForward = 0;
+    moveTarget = null;
+  }
+
   // Diablo click-to-move (Dota-style)
   if (cameraMode === 'diablo' && moveTarget && player) {
     const dx = moveTarget.x - player.position.x;
@@ -5959,6 +6827,7 @@ function animate() {
 
     updateInteractHint();
     updateRemotePlayers(frameDelta);
+    updateRound1Game();
     const elapsed = clock.elapsedTime || 0;
     worldAnimators.forEach((update) => update(elapsed, frameDelta));
     updateCityGuide(typeof performance !== 'undefined' ? performance.now() : Date.now());
