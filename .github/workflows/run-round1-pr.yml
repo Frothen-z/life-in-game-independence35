@@ -1,4 +1,4 @@
-name: Run Round 1 apply
+name: Apply tested Round 1
 
 on:
   pull_request:
@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.head_ref == 'round1-final'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -15,37 +16,47 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Extract and verify tested Round 1 payload
+
+      - name: Rebuild and verify Round 1 package
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin round1-final:refs/remotes/origin/round1-final --force
+          : > /tmp/round1.b64
+          for i in $(seq -w 0 11); do
+            git show "origin/round1-final:round1_payload/part-${i}.b64" >> /tmp/round1.b64
+          done
+
           python - <<'PY'
           from pathlib import Path
-          import base64, hashlib, re, sys
-          p = Path('.github/workflows/apply-round1.yml').read_text()
-          start = p.find('H4sI')
-          end = p.find('\nPAYLOAD', start)
-          if start < 0 or end < 0:
-              raise SystemExit('payload markers not found')
-          data = ''.join(p[start:end].split())
-          print('payload_chars=', len(data))
-          bad = sorted(set(re.sub(r'[A-Za-z0-9+/=]', '', data)))
-          print('invalid_chars=', repr(bad))
-          Path('/tmp/round1.b64').write_text(data)
-          try:
-              raw = base64.b64decode(data, validate=True)
-          except Exception as exc:
-              print('base64_error=', repr(exc))
-              raise
-          print('compressed_bytes=', len(raw))
-          print('compressed_sha256=', hashlib.sha256(raw).hexdigest())
+          import base64, hashlib
+          data = Path('/tmp/round1.b64').read_text().strip()
+          if len(data) != 110712:
+              raise SystemExit(f'Unexpected payload length: {len(data)}')
+          raw = base64.b64decode(data, validate=True)
+          digest = hashlib.sha256(raw).hexdigest()
+          if digest != 'b49d35c7292297118fa4983d0853fcd5c741dea8f369ab44c4e61864ab43be9b':
+              raise SystemExit(f'Payload SHA mismatch: {digest}')
           Path('/tmp/round1.tgz').write_bytes(raw)
+          print('Round 1 package verified:', len(raw), digest)
           PY
+
+          tar -tzf /tmp/round1.tgz
           tar -xzf /tmp/round1.tgz -C .
+
+          node --check game/js/main.js
+          node --check game/js/round1-game.js
+          node --check game/js/world/city-layout.js
+          grep -q "ROUND1_QUESTIONS" game/js/main.js
+          grep -q "id=\"round1-hud\"" game/index.html
+          grep -q "1 РАУНД" game/js/main.js
+
+          rm -rf round1_payload
           rm -f .github/workflows/apply-round1.yml .github/workflows/run-round1-pr.yml
           rmdir .github/workflows 2>/dev/null || true
           rmdir .github 2>/dev/null || true
-      - name: Commit playable Round 1
+
+      - name: Publish Round 1 to main
         shell: bash
         run: |
           set -euo pipefail
