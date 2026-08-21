@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Life in Game — Вход</title>
+  <style>
+    :root {
+      --glass: rgba(10, 14, 22, 0.62);
+      --glass-border: rgba(255, 255, 255, 0.16);
+      --text: #f5f8fc;
+      --muted: rgba(245, 248, 252, 0.65);
+      --input-bg: rgba(255, 255, 255, 0.08);
+      --sunset: #f0a05a;
+      --neon: #5ec8ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      min-height: 100%;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      color: var(--text);
+      background: #0a0e16;
+    }
+    .stage {
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 28px 5vw;
+      position: relative;
+      overflow: hidden;
+      background-color: #0a0e16;
+      background-image: url("bg-city.jpg");
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+    }
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg,
+        rgba(6, 10, 18, 0.15) 0%,
+        rgba(6, 10, 18, 0.25) 42%,
+        rgba(6, 10, 18, 0.55) 70%,
+        rgba(6, 10, 18, 0.72) 100%);
+      pointer-events: none;
+    }
+    .card {
+      position: relative;
+      z-index: 2;
+      width: min(100%, 400px);
+      padding: 32px 28px 28px;
+      border-radius: 18px;
+      background: var(--glass);
+      border: 1px solid var(--glass-border);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+    .logo { text-align: center; margin-bottom: 22px; }
+    .logo h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
+    .logo p { margin-top: 6px; font-size: 0.92rem; color: var(--muted); }
+    .tabs {
+      display: flex; gap: 20px; justify-content: center; margin-bottom: 22px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .tabs button {
+      appearance: none; background: none; border: none; color: var(--muted);
+      font-size: 0.95rem; padding: 10px 4px 12px; cursor: pointer;
+      position: relative; font-family: inherit;
+    }
+    .tabs button.active { color: var(--text); font-weight: 600; }
+    .tabs button.active::after {
+      content: ""; position: absolute; left: 0; right: 0; bottom: -1px;
+      height: 2px; border-radius: 2px;
+      background: linear-gradient(90deg, var(--sunset), var(--neon));
+    }
+    .form { display: flex; flex-direction: column; gap: 12px; }
+    .form .field-label { font-size: 0.78rem; color: var(--muted); margin-bottom: -4px; }
+    .form input[type="text"],
+    .form input[type="password"] {
+      width: 100%; padding: 13px 14px; border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12); background: var(--input-bg);
+      color: var(--text); font-size: 0.98rem; outline: none; font-family: inherit;
+    }
+    .form input::placeholder { color: rgba(255, 255, 255, 0.35); }
+    .form input:focus {
+      border-color: rgba(94, 200, 255, 0.55);
+      background: rgba(255, 255, 255, 0.11);
+    }
+    .gender {
+      display: flex; gap: 18px; justify-content: center;
+      padding: 6px 0 4px; font-size: 0.9rem; color: var(--muted);
+    }
+    .gender label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .gender input { accent-color: var(--neon); width: 16px; height: 16px; }
+    .btn-primary {
+      margin-top: 8px; width: 100%; padding: 14px 18px; border: none;
+      border-radius: 999px; font-size: 1rem; font-weight: 600; color: #0c121c;
+      cursor: pointer; font-family: inherit;
+      background: linear-gradient(90deg, #f0a05a 0%, #7ad4ff 100%);
+      box-shadow: 0 8px 28px rgba(94, 200, 255, 0.28);
+    }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .hint { margin-top: 16px; text-align: center; font-size: 0.8rem; color: var(--muted); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    @media (max-width: 720px) {
+      .stage {
+        justify-content: center; align-items: flex-end;
+        padding: 20px 16px 28px; background-position: 30% center;
+      }
+      .stage::before {
+        background: linear-gradient(180deg,
+          rgba(6, 10, 18, 0.2) 0%,
+          rgba(6, 10, 18, 0.55) 45%,
+          rgba(6, 10, 18, 0.82) 100%);
+      }
+      .card { width: 100%; max-width: 400px; }
+      .logo h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="card">
+      <div class="logo">
+        <h1>Life in Game</h1>
+        <p>Живи. Общайся. Играй.</p>
+      </div>
+      <div class="tabs" role="tablist">
+        <button type="button" class="active" data-tab="register">Регистрация</button>
+        <button type="button" data-tab="login">Вход</button>
+      </div>
+      <div class="panel active" id="panel-register">
+        <form class="form" onsubmit="return false;">
+          <label class="field-label" for="reg-name">Имя</label>
+          <input id="reg-name" type="text" placeholder="Твоё имя" autocomplete="username" />
+          <label class="field-label" for="reg-pass">Пароль</label>
+          <input id="reg-pass" type="password" placeholder="Пароль" autocomplete="new-password" />
+          <div class="gender">
+            <label><input type="radio" name="gender" value="male" checked /> Мужчина</label>
+            <label><input type="radio" name="gender" value="female" /> Женщина</label>
+          </div>
+          <button class="btn-primary" type="submit">Войти в город →</button>
+        </form>
+        <p class="hint">Реальный мир → виртуальный 3D</p>
+      </div>
+      <div class="panel" id="panel-login">
+        <form class="form" onsubmit="return false;">
+          <label class="field-label" for="login-name">Имя</label>
+          <input id="login-name" type="text" placeholder="Имя" autocomplete="username" />
+          <label class="field-label" for="login-pass">Пароль</label>
+          <input id="login-pass" type="password" placeholder="Пароль" autocomplete="current-password" />
+          <button class="btn-primary" type="submit">Войти в город →</button>
+        </form>
+        <p class="hint">Добро пожаловать обратно</p>
+      </div>
+    </div>
+  </div>
+  <script>
+    document.querySelectorAll('.tabs button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

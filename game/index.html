@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Life in Game</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/style.css?v=city40">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/",
+      "chess.js": "./vendor/chess/chess.js"
+    }
+  }
+  </script>
+  <script src="vendor/supabase.js" defer></script>
+</head>
+<body>
+  
+  <!-- AUTH / CHARACTER MENU -->
+  <div id="menu" class="menu">
+    <div class="menu-card" id="screen-auth">
+      <h1>Life in Game</h1>
+      <p class="subtitle">Живи. Общайся. Играй.</p>
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="register">Регистрация</button>
+        <button type="button" class="tab" data-tab="login">Вход</button>
+      </div>
+      <form id="form-register" class="form">
+        <label class="field-label" for="reg-username">Логин</label>
+        <input type="text" id="reg-username" minlength="3" maxlength="24" pattern="[a-z0-9_]+" placeholder="например, zafar_uz" required autocomplete="username" autocapitalize="none" spellcheck="false">
+        <label class="field-label" for="reg-name">Имя в городе</label>
+        <input type="text" id="reg-name" maxlength="40" placeholder="Как к вам обращаться" required autocomplete="name">
+        <label class="field-label" for="reg-email">Email</label>
+        <input type="email" id="reg-email" maxlength="120" placeholder="name@example.com" required autocomplete="email" autocapitalize="none" spellcheck="false">
+        <label class="field-label">Пароль</label>
+        <input type="password" id="reg-pass" minlength="8" maxlength="72" placeholder="Минимум 8 символов" required autocomplete="new-password">
+        <div class="gender-row">
+          <label class="gender-opt"><input type="radio" name="gender" value="male" checked> Мужчина</label>
+          <label class="gender-opt"><input type="radio" name="gender" value="female"> Женщина</label>
+        </div>
+        <label class="consent-row"><input type="checkbox" id="reg-consent" required> <span>Принимаю правила сообщества и политику конфиденциальности</span></label>
+        <button type="submit" class="btn primary" data-auth-submit>Создать аккаунт →</button>
+      </form>
+      <form id="form-login" class="form hidden">
+        <label class="field-label" for="login-email">Email</label>
+        <input type="email" id="login-email" maxlength="120" placeholder="name@example.com" required autocomplete="username" autocapitalize="none" spellcheck="false">
+        <label class="field-label">Пароль</label>
+        <input type="password" id="login-pass" maxlength="72" placeholder="Пароль" required autocomplete="current-password">
+        <button type="submit" class="btn primary" data-auth-submit>Войти в город →</button>
+        <button type="button" class="auth-link" id="btn-forgot-password">Забыли пароль?</button>
+      </form>
+      <form id="form-password-reset" class="form hidden">
+        <p class="form-note">Придумайте новый пароль для аккаунта.</p>
+        <label class="field-label" for="reset-pass">Новый пароль</label>
+        <input type="password" id="reset-pass" minlength="8" maxlength="72" placeholder="Минимум 8 символов" required autocomplete="new-password">
+        <button type="submit" class="btn primary">Сохранить новый пароль</button>
+      </form>
+      <p id="auth-error" class="error"></p>
+      <p id="auth-mode" class="auth-mode">Проверяем облачное подключение…</p>
+      <div class="guest-access">
+        <span>Хотите сначала посмотреть город?</span>
+        <button type="button" class="btn ghost" id="btn-guest">Войти как гость</button>
+        <small>Гостевой профиль остаётся только на этом устройстве.</small>
+      </div>
+    </div>
+
+    <div class="menu-card menu-card-char hidden" id="screen-character">
+      <div class="char-top">
+        <h1 class="char-brand">Life in Game</h1>
+        <span class="name-pill"><span id="char-name-display">—</span> · <span id="char-gender-display">—</span></span>
+      </div>
+      <div class="char-layout char-layout-simple">
+        <div class="char-stage">
+          <canvas id="preview-canvas"></canvas>
+          <div class="char-stage-label">Стандартный персонаж</div>
+          <p class="char-stage-sub">Можно сразу играть или создать свой аватар</p>
+        </div>
+        <div class="char-side char-actions">
+          <!-- clothes grid hidden but kept for JS compatibility -->
+          <div class="clothes-grid hidden" id="clothes-grid"></div>
+          <button type="button" class="btn btn-main" id="btn-avaturn" onclick="window.__openAvaturn && window.__openAvaturn(event)">Создать свой аватар</button>
+          <button type="button" class="btn btn-play" id="btn-start">Играть</button>
+          <button type="button" class="btn btn-back" id="btn-back-auth">Назад</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  
+  <!-- GOV CARD (gov.uz style) -->
+  <div id="gov-modal" class="gov-modal hidden">
+    <div class="gov-card gov-card-full">
+      <div class="gov-card-head">
+        <div>
+          <div class="gov-type" id="gov-type">Министерство</div>
+          <h2 id="gov-title">—</h2>
+          <p class="gov-title-uz" id="gov-title-uz"></p>
+        </div>
+        <button type="button" class="btn ghost" id="gov-close" style="width:auto;margin:0">✕</button>
+      </div>
+
+      <div class="gov-table">
+        <div class="gov-tr">
+          <div class="gov-th">Руководитель</div>
+          <div class="gov-td" id="gov-leader">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Телефон</div>
+          <div class="gov-td" id="gov-phones">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Ишонч телефони</div>
+          <div class="gov-td" id="gov-trust">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Веб-сайт</div>
+          <div class="gov-td gov-td-web" id="gov-website">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Электрон почта</div>
+          <div class="gov-td" id="gov-email">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Ижтимоий тармоқлар</div>
+          <div class="gov-td gov-td-social" id="gov-social">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Манзил</div>
+          <div class="gov-td" id="gov-address">—</div>
+        </div>
+        <div class="gov-tr">
+          <div class="gov-th">Иш вақти</div>
+          <div class="gov-td" id="gov-hours">—</div>
+        </div>
+        <div class="gov-tr gov-tr-map">
+          <div class="gov-th">Йўл харитаси</div>
+          <div class="gov-td">
+            <div class="gov-map-wrap">
+              <iframe id="gov-map" title="map" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                src="about:blank"></iframe>
+            </div>
+            <div class="gov-map-actions">
+              <a id="gov-map-link" class="gov-chip" href="#" target="_blank" rel="noopener">Как добраться</a>
+              <a id="gov-link" class="gov-chip primary" href="https://gov.uz/ru" target="_blank" rel="noopener">gov.uz</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="gov-desc" id="gov-desc"></p>
+      <p class="gov-note">Маълумотлар gov.uz очиқ манбаларидан · аниқлаштириш мумкин</p>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="loader"></div>
+    <p>Загрузка города и персонажа...</p>
+    <p class="hint">Первый запуск может занять немного времени.</p>
+  </div>
+
+  <section id="webgl-fallback" class="webgl-fallback hidden" aria-labelledby="webgl-title">
+    <div class="webgl-fallback-card">
+      <span class="webgl-kicker">2D‑режим</span>
+      <h2 id="webgl-title">3D‑город недоступен на этом устройстве</h2>
+      <p>Браузер не смог включить WebGL. Ваш аккаунт и профиль остаются доступны.</p>
+      <div class="webgl-actions">
+        <button type="button" class="btn primary" id="webgl-profile">Открыть профиль</button>
+        <button type="button" class="btn primary" id="webgl-social">Друзья и чаты</button>
+        <button type="button" class="btn ghost" id="webgl-retry">Попробовать снова</button>
+      </div>
+    </div>
+  </section>
+  <div id="ui">
+    <div id="crosshair"></div>
+    <div id="info">
+      <h1>Life in Game</h1>
+      <p>ПК: WASD + мышь</p>
+      <p>Телефон: джойстик + свайп</p>
+      <p>Прыжок / Бег — кнопки</p>
+      <p>E — взаимодействие</p>
+      <p id="fps">FPS: --</p>
+    </div>
+    <aside id="city-guide" class="city-guide" aria-label="Навигация по городу">
+      <div class="city-guide-head">
+        <span class="city-guide-kicker">Сейчас вы здесь</span>
+        <strong id="city-district">Главная площадь</strong>
+      </div>
+      <div id="city-minimap" class="city-minimap" aria-hidden="true">
+        <span class="map-route route-north"></span>
+        <span class="map-route route-east"></span>
+        <span class="map-route route-ne"></span>
+        <span class="map-route route-west"></span>
+        <span class="map-hub"></span>
+        <span class="map-landmark map-entertainment">ИГРЫ</span>
+        <span class="map-landmark map-restaurant">ЕДА</span>
+        <span class="map-landmark map-government">GOV</span>
+        <span class="map-landmark map-park">ПАРК</span>
+        <span id="city-map-target" class="city-map-target hidden"></span>
+        <span id="city-map-player" class="city-map-player"></span>
+      </div>
+      <div id="city-destinations" class="city-destinations"></div>
+      <div id="route-status" class="route-status">Выберите район для маршрута</div>
+    </aside>
+    <button type="button" id="btn-cam-mode" class="hud-btn hidden">Вид: сверху</button>
+    <button type="button" id="btn-profile" class="hud-btn hidden">Профиль</button>
+    <button type="button" id="btn-social" class="hud-btn hidden">Сообщество <span id="social-badge" class="hidden">0</span></button>
+    <div id="players-online" class="players-online hidden">Онлайн: 1</div>
+    <div id="toast"></div>
+  </div>
+  
+  <!-- RESTAURANT UI -->
+  <div id="restaurant-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2>Ресторан «Skyline»</h2>
+          <p class="modal-sub">Бронирование столиков</p>
+        </div>
+        <button type="button" class="modal-close" id="resto-close">✕</button>
+      </div>
+      <div class="resto-tabs">
+        <button type="button" class="resto-tab active" data-panel="tables">Столики</button>
+        <button type="button" class="resto-tab" data-panel="menu">Меню</button>
+        <button type="button" class="resto-tab" data-panel="order">Заказ</button>
+      </div>
+
+      <div class="resto-panel" id="panel-tables">
+        <p class="modal-hint">Выбери свободный столик и забронируй</p>
+        <div class="tables-grid" id="tables-grid"></div>
+        <div class="modal-footer">
+          <div id="resto-status">Нажми на свободный стол</div>
+          <button type="button" class="btn primary" id="resto-book" disabled>Забронировать</button>
+        </div>
+      </div>
+
+      <div class="resto-panel hidden" id="panel-menu">
+        <p class="modal-hint">Добавь блюда в заказ</p>
+        <div class="food-list" id="food-list"></div>
+      </div>
+
+      <div class="resto-panel hidden" id="panel-order">
+        <p class="modal-hint">Твой заказ</p>
+        <div id="order-list" class="order-list"></div>
+        <div class="order-total">
+          <span>Итого</span>
+          <strong id="order-sum">0 ₽</strong>
+        </div>
+        <button type="button" class="btn primary" id="resto-order-btn">Оформить заказ</button>
+      </div>
+    </div>
+  </div>
+  <div id="interact-hint" class="interact-hint hidden">Нажми <kbd>E</kbd> — открыть ресторан</div>
+
+  
+  <!-- MOBILE CONTROLS -->
+  <div id="mobile-controls" class="mobile-controls hidden">
+    <div id="joy-zone" class="joy-zone">
+      <div id="joy-base" class="joy-base">
+        <div id="joy-stick" class="joy-stick"></div>
+      </div>
+    </div>
+    <div id="look-zone" class="look-zone"></div>
+    <div class="mobile-btns">
+      <button type="button" id="btn-jump" class="mbtn">ПРЫЖОК</button>
+      <button type="button" id="btn-sprint" class="mbtn">БЕГ</button>
+      <button type="button" id="btn-interact" class="mbtn accent">E</button>
+    </div>
+  </div>
+
+  
+  <!-- PROFILE -->
+  <div id="profile-modal" class="modal hidden">
+    <div class="modal-card modal-card-profile">
+      <div class="modal-head">
+        <div>
+          <h2>Мой профиль</h2>
+          <p class="modal-sub">Как в соцсети — заполни анкету</p>
+        </div>
+        <button type="button" class="modal-close" id="profile-close">✕</button>
+      </div>
+      <div class="profile-body">
+        <div class="profile-photo-wrap">
+          <div id="profile-photo" class="profile-photo">👤</div>
+          <label class="btn ghost photo-btn">Фото
+            <input type="file" id="profile-photo-input" accept="image/*" hidden>
+          </label>
+        </div>
+        <label>Статус</label>
+        <input type="text" id="profile-status" maxlength="80" placeholder="Что у тебя нового?">
+        <label>Имя</label>
+        <input type="text" id="profile-name" maxlength="24" readonly>
+        <label>Логин</label>
+        <input type="text" id="profile-username" maxlength="24" readonly>
+        <label>Город</label>
+        <input type="text" id="profile-city" maxlength="40" placeholder="Ташкент">
+        <label>Работа / учёба</label>
+        <input type="text" id="profile-work" maxlength="60" placeholder="Где работаешь">
+        <label>Дата рождения</label>
+        <input type="date" id="profile-birthday">
+        <label>О себе</label>
+        <textarea id="profile-about" maxlength="300" rows="3" placeholder="Расскажи о себе"></textarea>
+      </div>
+      <div class="modal-footer profile-footer">
+        <div id="profile-cloud-status" class="profile-cloud">Локальный профиль</div>
+        <button type="button" class="btn ghost profile-logout" id="profile-logout">Выйти</button>
+        <button type="button" class="btn primary" id="profile-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Avaturn fullscreen -->
+  <div id="avaturn-overlay" class="avaturn-overlay hidden">
+    <button type="button" id="avaturn-close" class="avaturn-close">✕ Закрыть</button>
+    <div id="avaturn-sdk-container"></div>
+  </div>
+  
+  <!-- MAFIA MINI-GAME -->
+  <div id="mafia-modal" class="modal hidden">
+    <div class="modal-card modal-card-mafia">
+      <div class="modal-head">
+        <div>
+          <h2>Клуб «Мафия»</h2>
+          <p class="modal-sub">Запись за стол · ведёт бот-ведущий</p>
+        </div>
+        <button type="button" class="modal-close" id="mafia-close">✕</button>
+      </div>
+      <div id="mafia-lobby" class="mafia-panel">
+        <p class="modal-hint">Сядьте за стол, включите камеру и нажмите «Готов». Для корректного баланса нужно минимум 4 игрока.</p>
+        <div class="mafia-row">
+          <input type="text" id="mafia-room-code" maxlength="12" placeholder="Код стола (или пусто = новый)" style="flex:1">
+          <button type="button" class="btn primary" id="mafia-join-btn" style="width:auto;margin:0">Войти</button>
+        </div>
+        <div id="mafia-room-info" class="mafia-room-info hidden">Стол: <strong id="mafia-room-label">—</strong></div>
+        <div class="mafia-slots" id="mafia-slots"></div>
+        <div class="mafia-cam-wrap">
+          <video id="mafia-local-video" autoplay playsinline muted></video>
+          <div class="mafia-cam-status" id="mafia-cam-status">Камера выкл</div>
+        </div>
+        <div class="modal-footer" style="margin-top:12px">
+          <button type="button" class="btn ghost" id="mafia-cam-btn" style="width:auto;margin:0">Включить камеру и микрофон</button>
+          <button type="button" class="btn primary" id="mafia-ready-btn" style="width:auto;margin:0" disabled>Готов</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="mafia-game" class="mafia-game hidden">
+    <div class="mafia-game-top">
+      <div>
+        <div class="mafia-phase" id="mafia-phase">Лобби</div>
+        <div class="mafia-timer" id="mafia-timer"></div>
+      </div>
+      <div class="mafia-role-badge hidden" id="mafia-role-badge">Роль: —</div>
+      <button type="button" class="btn ghost" id="mafia-leave-btn" style="width:auto;margin:0;padding:8px 12px">Выйти</button>
+    </div>
+    <div class="mafia-bot-log" id="mafia-bot-log">Бот-ведущий ждёт игроков…</div>
+    <div class="mafia-video-grid" id="mafia-video-grid"></div>
+    <div class="mafia-actions" id="mafia-actions"></div>
+  </div>
+
+  
+  <!-- CINEMA -->
+  <div id="cinema-modal" class="modal hidden">
+    <div class="modal-card modal-card-mafia">
+      <div class="modal-head">
+        <div>
+          <h2>Цифровой кинотеатр</h2>
+          <p class="modal-sub">До 4 зрителей · mover.uz · камера и микрофон</p>
+        </div>
+        <button type="button" class="modal-close" id="cinema-close">✕</button>
+      </div>
+      <div id="cinema-lobby" class="mafia-panel">
+        <p class="modal-hint">Получите бесплатный демо-билет, войдите в зал по коду и включите камеру. Хост открывает видео и транслирует вкладку — гости смотрят вместе.</p>
+        <div class="cinema-ticket-box">
+          <div>Билет: <strong id="cinema-ticket-status">нет</strong></div>
+          <button type="button" class="btn primary" id="cinema-buy-btn" style="width:auto;margin:0">Получить демо-билет</button>
+        </div>
+        <div class="mafia-row" style="margin-top:12px">
+          <input type="text" id="cinema-room-code" maxlength="12" placeholder="Код зала (пусто = новый)" style="flex:1">
+          <button type="button" class="btn primary" id="cinema-join-btn" style="width:auto;margin:0">В зал</button>
+        </div>
+        <div id="cinema-room-info" class="mafia-room-info hidden">Зал: <strong id="cinema-room-label">—</strong> · <span id="cinema-count">0</span>/4</div>
+        <div class="mafia-slots" id="cinema-slots"></div>
+        <div class="mafia-cam-wrap">
+          <video id="cinema-local-video" autoplay playsinline muted></video>
+          <div class="mafia-cam-status" id="cinema-cam-status">Камера выкл</div>
+        </div>
+        <div class="modal-footer" style="margin-top:12px">
+          <button type="button" class="btn ghost" id="cinema-cam-btn" style="width:auto;margin:0">Включить камеру и микрофон</button>
+          <button type="button" class="btn primary" id="cinema-enter-btn" style="width:auto;margin:0" disabled>Войти в зал</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="cinema-room" class="cinema-room hidden">
+    <div class="cinema-top">
+      <div>
+        <div class="cinema-title">Кинотеатр · <span id="cinema-room-title">—</span></div>
+        <div class="cinema-sub" id="cinema-sub">До 4 зрителей</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button type="button" class="btn ghost" id="cinema-fs-btn" style="width:auto;margin:0;padding:8px 12px">⛶ Полный экран</button>
+        <button type="button" class="btn ghost" id="cinema-leave-btn" style="width:auto;margin:0;padding:8px 12px">Выйти</button>
+      </div>
+    </div>
+    <div class="cinema-screen-wrap" id="cinema-screen-wrap">
+      <video id="cinema-screen" class="cinema-screen-video" autoplay playsinline></video>
+      <div id="cinema-screen-ui" class="cinema-screen-ui">
+        <p id="cinema-broadcast-hint" class="cinema-hint-text">Ожидание трансляции хоста…</p>
+        <div id="cinema-host-panel" class="cinema-host-panel hidden">
+          <p>mover.uz нельзя открыть внутри игры (защита сайта / CSRF).</p>
+          <p>1) Откройте mover.uz → 2) Начните трансляцию → 3) Выберите <b>окно/вкладку mover.uz</b></p>
+          <div class="cinema-host-actions">
+            <button type="button" class="btn primary" id="cinema-open-mover" style="width:auto">Открыть mover.uz</button>
+            <button type="button" class="btn primary" id="cinema-start-broadcast" style="width:auto">Начать трансляцию</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cinema-viewers" id="cinema-viewers"></div>
+  </div>
+
+  <canvas id="c"></canvas>
+  <script src="../SETTINGS_HERE.js?v=1"></script>
+  <script type="module" src="js/main.js?v=city41"></script>
+</body>
+</html>
