@@ -1,9 +1,8 @@
 name: Restore exact original Life in Game
 
 on:
-  push:
-    paths:
-      - '.github/workflows/restore-original.yml'
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Download and verify exact original files
@@ -84,7 +84,7 @@ jobs:
           test "$count" = '35'
           echo "All 35 original files verified byte-for-byte."
 
-      - name: Replace repository with exact original public_html contents
+      - name: Replace main with exact original public_html contents
         shell: bash
         run: |
           set -euo pipefail
