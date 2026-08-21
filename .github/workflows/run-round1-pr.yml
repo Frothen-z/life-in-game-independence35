@@ -15,13 +15,33 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Extract tested Round 1 payload
+      - name: Extract and verify tested Round 1 payload
         shell: bash
         run: |
           set -euo pipefail
-          awk '/^[[:space:]]*H4sI/{capture=1} capture{print} /^[[:space:]]*PAYLOAD$/{exit}' .github/workflows/apply-round1.yml | sed '$d' | tr -d '[:space:]' > /tmp/round1.b64
-          test -s /tmp/round1.b64
-          base64 -d /tmp/round1.b64 | tar -xzf - -C .
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, re, sys
+          p = Path('.github/workflows/apply-round1.yml').read_text()
+          start = p.find('H4sI')
+          end = p.find('\nPAYLOAD', start)
+          if start < 0 or end < 0:
+              raise SystemExit('payload markers not found')
+          data = ''.join(p[start:end].split())
+          print('payload_chars=', len(data))
+          bad = sorted(set(re.sub(r'[A-Za-z0-9+/=]', '', data)))
+          print('invalid_chars=', repr(bad))
+          Path('/tmp/round1.b64').write_text(data)
+          try:
+              raw = base64.b64decode(data, validate=True)
+          except Exception as exc:
+              print('base64_error=', repr(exc))
+              raise
+          print('compressed_bytes=', len(raw))
+          print('compressed_sha256=', hashlib.sha256(raw).hexdigest())
+          Path('/tmp/round1.tgz').write_bytes(raw)
+          PY
+          tar -xzf /tmp/round1.tgz -C .
           rm -f .github/workflows/apply-round1.yml .github/workflows/run-round1-pr.yml
           rmdir .github/workflows 2>/dev/null || true
           rmdir .github 2>/dev/null || true
