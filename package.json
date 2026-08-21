@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "name": "life-in-game-original",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node build.cjs"
+  }
+}

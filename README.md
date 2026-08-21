@@ -1,18 +1,9 @@
-# Mustaqillik 35 — 3D Uzbekistan
+# Life in Game
 
-Browser-based Three.js prototype for the 35th anniversary of Uzbekistan's Independence.
+Original Life in Game web project restored from the user-provided AHOST MVP archive.
 
-## Current build
-- Open 3D city with roads, plaza, buildings and landscape
-- Central Independence monument
-- Heritage pavilion and Future center
-- Third-person WASD movement, running and orbit camera
-- Three interactive quest points with a completion screen
-- Optional Avaturn GLB/GLTF avatar URL from the in-game Avatar panel
-- Static deployment: no Unity, Node server or build command required
+This branch intentionally contains the original Life in Game interface and gameplay source. It does not contain the temporary “Mustaqillik 35” prototype.
 
-## Vercel
-Import this repository with **Framework Preset: Other** and **Root Directory: ./**, then deploy. `vercel.json` contains the static-site settings.
+Vercel reconstructs the source files during build from the compressed payload in `payload/`.
 
-## Next phase
-Replace procedural placeholder architecture with optimized Meshy AI GLB assets and expand the contest missions/world.
+Local heavyweight GLB assets are being handled separately; the original game code includes fallbacks when optional 3D assets are unavailable.
