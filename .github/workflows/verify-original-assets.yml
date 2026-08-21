@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/verify-original-assets.yml'
+  pull_request:
   workflow_dispatch:
 
 jobs:
