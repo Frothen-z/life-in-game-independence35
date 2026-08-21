@@ -1,0 +1,97 @@
+name: Restore exact original Life in Game
+
+on:
+  push:
+    paths:
+      - '.github/workflows/restore-original.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify exact original files
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://lifeingame.uz'
+          out='/tmp/life-original'
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          while read -r expected path; do
+            [ -z "$expected" ] && continue
+            path="${path#./}"
+            mkdir -p "$out/$(dirname "$path")"
+            echo "Downloading $path"
+            curl -fL --retry 3 --connect-timeout 15 --max-time 180 "$base/$path" -o "$out/$path"
+            actual="$(sha256sum "$out/$path" | awk '{print $1}')"
+            if [ "$actual" != "$expected" ]; then
+              echo "HASH MISMATCH: $path"
+              echo "expected=$expected"
+              echo "actual=$actual"
+              exit 1
+            fi
+          done <<'MANIFEST'
+          e6d2e59b7b5bbb0342e0fb496dfc262decbfe4426bbb7b047aec8d467d1dc6f7 ./favicon.svg
+          469e1d4e93dd6c2e5b356c12b26100bcf4b95ff80bb5e13af6dcd0eedac2b7f7 ./game/assets/bg-city.jpg
+          8abe441bd05e73e8f42c0966f10f49abab46328092e379111b04240c78ac1b27 ./game/css/style.css
+          88aa932060619f2c510c69dc857a06ca3b472ba589465c40b153e833f77848cf ./game/index.html
+          732adea0a7137c307790dd59439cfe2d377790a1da4198dbf407875ab78568b8 ./game/js/clubs.js
+          7fd68d67772dda74e6f750693dae159a5f955b6639a82cc4cf743d2f5ed97953 ./game/js/config.js
+          ad7c08fb5bce32528dbb445e78d56849f8d923d74d2c25c8b636efaca657c3ae ./game/js/core/lifecycle.js
+          34334b4013dceeb542e9806be6dc38420002dcc5d266711991e0e4359e7f15ab ./game/js/gov.js
+          fa2f16769baf56ac214d188dc4b15373c5d22b9a6be5d9ad2b1d2c418ee8edbf ./game/js/main.js
+          0245d5d1d2dff22f838dd582fe78d50c7122123639acb35677e4d8df1a0ffb54 ./game/js/services/auth-service.js
+          28d8a3211a7981bbdb73880f9e6a38f162af7faacba0fa8142b4cfb5b34369b2 ./game/js/services/game-rules.js
+          818805ffd2e0cd9a7d7221a29808f57747c8b69f044f6c15183ec283b4cdaac0 ./game/js/services/media-room.js
+          ab2dc1e83a6d89a2bf26ace6fbcf67a6f6a0d3d4843175bd62b87c998a7651a6 ./game/js/services/realtime-room.js
+          9bc5f758703630fdd1553ada91b784d4748069c66427d8eb2c3330fd4aacba78 ./game/js/services/social-service.js
+          e683895b5fb70ef13dc18ca5d7d46a6b72cb82c72ff05d277fed15375ebe0388 ./game/js/social.js
+          6c9855d94cc6109801b3346fae69c709ff241d028a42d0c843ce58ecaa888ee3 ./game/js/world/city-layout.js
+          1b9a811535cc7aaf21c86f2fd597f29931b8521d6b159730eadd7ce6cf577296 ./game/login-mockup.html
+          3a2252b21c13ff98f5032958e0a459e36aab61fa1b9405311e30bea760274ee6 ./game/models/chess/board.glb
+          9bed82346f2e6124f2e8b9ca38cc631ddb5ae438a102094628e89326dff5a935 ./game/models/city/env/lantern.glb
+          024459eb9ea35308f2c2d7b58440c623316ab2489316302113233e013313d228 ./game/models/city/grass.glb
+          48cf5cd9197ac49eaa9ee94269245cb70631b3680609c9f543af3051e22fd88a ./game/models/city/restaurant.glb
+          9586f1343be48fe4c3858ebfb7d004cc0571ce7d17ed0c6d3d0d6d8e81790f19 ./game/models/model.glb
+          26d3fb568fcc6ddc3e6de3d683a3d4ee3a93f0f04761eb5386471055b1e06dba ./game/models/model_idle.glb
+          9586f1343be48fe4c3858ebfb7d004cc0571ce7d17ed0c6d3d0d6d8e81790f19 ./game/models/model_walk.glb
+          76c7c34f0e2e9ab076521a5d6fe786a9cce537bb1b6f29d32a9c9970b5b232d2 ./game/vendor/chess/chess.js
+          acb0ff94d45254d538678978acda517c21f0accc8959f9803148b9898afaf1b8 ./game/vendor/supabase.js
+          d20aeaf7077c459a8d952d215738d7b44fba028440bb862d84b622a34f0c80bb ./game/vendor/three/addons/geometries/RoundedBoxGeometry.js
+          d073b438e6a07e1359741dd5d6c76c953420cc0d4fd84eb1bdde94315540e6a3 ./game/vendor/three/addons/loaders/GLTFLoader.js
+          eacd17d5debec3b909d1208304d70024a59c38c58b6533fcd4711f8a6a0b63bc ./game/vendor/three/addons/objects/Sky.js
+          9be041e96308775d00e2695cc607645b9a9b64fd7c0e759dd8f7c00a8d92becb ./game/vendor/three/addons/utils/BufferGeometryUtils.js
+          83748c5072a5ce96e9d68d8efda908a1f1a06c0b5fd2618edc3e54a361a8fd5b ./game/vendor/three/addons/utils/SkeletonUtils.js
+          76dea8151bc9352aef3528b4262e249b2604f62543828328db978d060d61a495 ./game/vendor/three/three.module.js
+          7d96c3a7f285233771afbb778a620bf447e25ee6801bc37a6701e1dece340d9c ./index.html
+          MANIFEST
+
+          printf '%s' 'RGlyZWN0b3J5SW5kZXggaW5kZXguaHRtbApBZGRUeXBlIG1vZGVsL2dsdGYtYmluYXJ5IC5nbGIKCjxJZk1vZHVsZSBtb2RfZGVmbGF0ZS5jPgogIEFkZE91dHB1dEZpbHRlckJ5VHlwZSBERUZMQVRFIHRleHQvaHRtbCB0ZXh0L2NzcyB0ZXh0L2phdmFzY3JpcHQgYXBwbGljYXRpb24vamF2YXNjcmlwdCBhcHBsaWNhdGlvbi9qc29uIGltYWdlL3N2Zyt4bWwKPC9JZk1vZHVsZT4KCjxJZk1vZHVsZSBtb2RfZXhwaXJlcy5jPgogIEV4cGlyZXNBY3RpdmUgT24KICBFeHBpcmVzQnlUeXBlIHRleHQvaHRtbCAiYWNjZXNzIHBsdXMgMCBzZWNvbmRzIgogIEV4cGlyZXNCeVR5cGUgdGV4dC9jc3MgImFjY2VzcyBwbHVzIDEgZGF5IgogIEV4cGlyZXNCeVR5cGUgdGV4dC9qYXZhc2NyaXB0ICJhY2Nlc3MgcGx1cyAxIGRheSIKICBFeHBpcmVzQnlUeXBlIGFwcGxpY2F0aW9uL2phdmFzY3JpcHQgImFjY2VzcyBwbHVzIDEgZGF5IgogIEV4cGlyZXNCeVR5cGUgaW1hZ2UvanBlZyAiYWNjZXNzIHBsdXMgNyBkYXlzIgogIEV4cGlyZXNCeVR5cGUgaW1hZ2UvcG5nICJhY2Nlc3MgcGx1cyA3IGRheXMiCiAgRXhwaXJlc0J5VHlwZSBpbWFnZS9zdmcreG1sICJhY2Nlc3MgcGx1cyA3IGRheXMiCiAgRXhwaXJlc0J5VHlwZSBtb2RlbC9nbHRmLWJpbmFyeSAiYWNjZXNzIHBsdXMgNyBkYXlzIgo8L0lmTW9kdWxlPgo=' | base64 -d > "$out/.htaccess"
+          printf '%s' 'Ly8gTElGRSBJTiBHQU1FIOKAlCDQtdC00LjQvdGB0YLQstC10L3QvdGL0Lkg0YTQsNC50Lsg0L3QsNGB0YLRgNC+0LXQuiDQtNC70Y8g0L/RgNC+0YHRgtC+0LPQviDRgdGC0LDRgtC40YfQtdGB0LrQvtCz0L4g0YXQvtGB0YLQuNC90LPQsC4KLy8g0JfQsNC/0L7Qu9C90LjRgtC1INC/0LXRgNCy0YvQtSDQtNCy0LAg0LfQvdCw0YfQtdC90LjRjyDQtNCw0L3QvdGL0LzQuCDQuNC3IFN1cGFiYXNlIFByb2plY3QgU2V0dGluZ3Mg4oaSIEFQSS4KLy8g0J/Rg9Cx0LvQuNGH0L3Ri9C5IGFub24vcHVibGlzaGFibGUga2V5INGA0LDQt9GA0LXRiNC10L3QviDQuNGB0L/QvtC70YzQt9C+0LLQsNGC0Ywg0LIg0LHRgNCw0YPQt9C10YDQtS4KLy8g0J3QuNC60L7Qs9C00LAg0L3QtSDQstGB0YLQsNCy0LvRj9C50YLQtSDRgdGO0LTQsCBzZXJ2aWNlX3JvbGUga2V5Lgp3aW5kb3cuTElGRV9JTl9HQU1FX0NPTkZJRyA9IHsKICBzdXBhYmFzZVVybDogIiIsCiAgc3VwYWJhc2VBbm9uS2V5OiAiIiwKICBhdmF0dXJuU3ViZG9tYWluOiAiZGVtbyIKfTsK' | base64 -d > "$out/SETTINGS_HERE.js"
+
+          test "$(sha256sum "$out/.htaccess" | awk '{print $1}')" = 'e4f0b806658e131e58f78380455058b5a20bd88bde8da57269b25606e57ea053'
+          test "$(sha256sum "$out/SETTINGS_HERE.js" | awk '{print $1}')" = '574e8e164d88dbf308e2c246f5efa9fb19d863c758abd692203d970d6ca8eea0'
+          count="$(find "$out" -type f | wc -l | tr -d ' ')"
+          test "$count" = '35'
+          echo "All 35 original files verified byte-for-byte."
+
+      - name: Replace repository with exact original public_html contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a /tmp/life-original/. .
+          git config user.name 'Frothen-z'
+          git config user.email 'frothen234@gmail.com'
+          git add -A
+          git commit -m 'Restore exact original Life in Game from public_html'
+          git push origin HEAD:main
