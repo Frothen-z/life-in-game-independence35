@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Life in Game</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css?v=round1-mobile-9">
+  <link rel="stylesheet" href="css/style.css?v=round1-flow-10">
   <script type="importmap">
   {
     "imports": {
@@ -29,19 +29,12 @@
         <button type="button" class="tab" data-tab="login">Вход</button>
       </div>
       <form id="form-register" class="form">
-        <label class="field-label" for="reg-username">Логин</label>
-        <input type="text" id="reg-username" minlength="3" maxlength="24" pattern="[a-z0-9_]+" placeholder="например, zafar_uz" required autocomplete="username" autocapitalize="none" spellcheck="false">
-        <label class="field-label" for="reg-name">Имя в городе</label>
-        <input type="text" id="reg-name" maxlength="40" placeholder="Как к вам обращаться" required autocomplete="name">
+        <label class="field-label" for="reg-name">Имя</label>
+        <input type="text" id="reg-name" maxlength="50" placeholder="Ваше имя" required autocomplete="name">
         <label class="field-label" for="reg-email">Email</label>
         <input type="email" id="reg-email" maxlength="120" placeholder="name@example.com" required autocomplete="email" autocapitalize="none" spellcheck="false">
-        <label class="field-label">Пароль</label>
-        <input type="password" id="reg-pass" minlength="8" maxlength="72" placeholder="Минимум 8 символов" required autocomplete="new-password">
-        <div class="gender-row">
-          <label class="gender-opt"><input type="radio" name="gender" value="male" checked> Мужчина</label>
-          <label class="gender-opt"><input type="radio" name="gender" value="female"> Женщина</label>
-        </div>
-        <label class="consent-row"><input type="checkbox" id="reg-consent" required> <span>Принимаю правила сообщества и политику конфиденциальности</span></label>
+        <label class="field-label" for="reg-pass">Пароль</label>
+        <input type="password" id="reg-pass" maxlength="72" placeholder="Пароль" required autocomplete="new-password">
         <button type="submit" class="btn primary" data-auth-submit>Создать аккаунт →</button>
       </form>
       <form id="form-login" class="form hidden">
@@ -215,6 +208,7 @@
       <div id="round1-question" class="round1-question">Ожидание игроков...</div>
       <div id="round1-status" class="round1-status">Соберитесь на стартовой площади</div>
       <button type="button" id="round1-start" class="round1-start hidden">Записаться на участие</button>
+      <button type="button" id="round1-cancel" class="round1-cancel hidden">Отменить запись</button>
     </section>
     <div id="round1-waiting" class="round1-waiting hidden">
       <strong>Вы выбыли из раунда</strong>
@@ -438,6 +432,6 @@
 
   <canvas id="c"></canvas>
   <script src="../SETTINGS_HERE.js?v=supabase-live-1"></script>
-  <script type="module" src="js/main.js?v=round1-mobile-9"></script>
+  <script type="module" src="js/main.js?v=round1-flow-10"></script>
 </body>
 </html>

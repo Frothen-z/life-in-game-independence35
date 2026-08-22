@@ -249,6 +249,7 @@ html, body {
   margin: 12px 0 6px;
 }
 .form input[type="text"],
+.form input[type="email"],
 .form input[type="password"] {
   width: 100%;
   padding: 12px 14px;
@@ -2187,3 +2188,83 @@ body.round1-mode:not(.round1-playing) #mobile-controls { display: none !importan
 .round1-start { pointer-events: auto !important; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .round1-hud { cursor: default; }
 
+
+
+/* ROUND1_FLOW_V10 */
+.round1-cancel {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.82);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.round1-cancel.hidden { display: none !important; }
+.round1-cancel:disabled { opacity: 0.45; cursor: default; }
+
+@media (max-width: 760px) {
+  html, body { min-height: 100%; min-height: 100dvh; }
+  .menu {
+    min-height: 100dvh;
+    height: 100dvh;
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
+  .menu-card,
+  #screen-auth {
+    width: 100%;
+    max-width: 420px;
+    max-height: none;
+    margin: auto 0;
+    padding: 18px 16px;
+    border-radius: 16px;
+    overflow: visible;
+  }
+  .menu-card h1 { font-size: 1.35rem; }
+  .subtitle { margin-bottom: 12px; }
+  .tabs { margin-bottom: 10px; }
+  .tab { padding: 9px 8px; }
+  .form label { margin: 9px 0 5px; }
+  .form input[type="text"],
+  .form input[type="email"],
+  .form input[type="password"] {
+    width: 100%;
+    min-height: 44px;
+    padding: 11px 12px;
+    font-size: 16px;
+  }
+  #form-register .btn,
+  #form-login .btn { margin-top: 12px; padding: 12px; }
+  .error { margin-top: 7px; }
+  .auth-mode { margin-top: 6px; }
+  .guest-access { margin-top: 10px; padding-top: 10px; }
+  .guest-access .btn { margin-top: 7px; }
+}
+
+@media (max-width: 760px) and (max-height: 640px) {
+  .menu { padding: 4px 8px; }
+  .menu-card,
+  #screen-auth { padding: 12px 14px; border-radius: 12px; }
+  .subtitle { display: none; }
+  .tabs { margin-bottom: 6px; }
+  .form label { margin: 6px 0 3px; }
+  #form-register .btn,
+  #form-login .btn { margin-top: 8px; }
+  .auth-mode { font-size: 0.72rem; }
+  .guest-access small { display: none; }
+}

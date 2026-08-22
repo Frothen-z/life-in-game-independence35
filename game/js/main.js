@@ -56,7 +56,7 @@ const PLAYER_TURN_SPEED = Math.PI * 2.35;
 const ROUND1_ROOM_KEY = 'round1';
 const ROUND1_START_Z = -18;
 const ROUND1_WAITING = Object.freeze({ x: 41, z: 18 });
-const ROUND1_RED_GRACE_MS = 240;
+const ROUND1_RED_GRACE_MS = 420;
 const ROUND1_RED_CHECK_MS = 1450;
 const WALK_CYCLE_DISTANCE = 1.35;
 const RUN_CYCLE_DISTANCE = 2.4;
@@ -136,6 +136,7 @@ let cloudSession = null;
 let cloudEnabled = false;
 let playerId = null;
 let guestConnectionId = null;
+let round1GuestRealtimeClient = null;
 let clothingMeshes = { look: [], shoes: [], body: [], hair: [] };
 let worldAnimators = [];
 let navigationTarget = null;
@@ -156,6 +157,7 @@ let round1RedAnchor = null;
 let round1RedMaxMovement = 0;
 let round1RedStartedAt = 0;
 let round1StartButton = null;
+let round1CancelButton = null;
 let round1Hud = null;
 let round1Status = null;
 let round1Question = null;
@@ -165,6 +167,7 @@ let round1IsSpectator = false;
 let round1RoundFinished = false;
 let round1DebugBot = null;
 let round1Joined = false;
+let round1JoinedAt = 0;
 let round1JoinBusy = false;
 let round1RealtimeReady = false;
 let round1AutoStartTimer = 0;
@@ -790,6 +793,28 @@ let cityRoom = null;
 let remoteAvatarTemplate = null;
 let remoteAvatarLoading = null;
 
+async function getRound1RealtimeClient() {
+  if (!currentUser?.isGuest) return supabaseClient;
+  if (round1GuestRealtimeClient) return round1GuestRealtimeClient;
+  try {
+    const cfg = await import('./config.js');
+    const createClient = globalThis.supabase?.createClient;
+    if (typeof createClient !== 'function' || !cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY) return supabaseClient;
+    round1GuestRealtimeClient = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false
+      },
+      realtime: { params: { eventsPerSecond: 30 } }
+    });
+    return round1GuestRealtimeClient;
+  } catch (error) {
+    console.warn('guest realtime client', error);
+    return supabaseClient;
+  }
+}
+
 async function initMultiplayer() {
   ensurePlayerId();
   loadRemoteAvatarTemplates();
@@ -820,9 +845,10 @@ async function initMultiplayer() {
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 32) || 'round1-main';
 
-  if (supabaseClient) {
+  const primaryRealtimeClient = await getRound1RealtimeClient();
+  if (primaryRealtimeClient) {
     try {
-      await connectSupabaseMultiplayer(roomId);
+      await connectSupabaseMultiplayer(roomId, primaryRealtimeClient);
       showToast(currentUser?.isGuest
         ? 'Гостевой сетевой режим готов · запишитесь на Раунд 1'
         : 'Сетевой режим готов · запишитесь на Раунд 1');
@@ -850,8 +876,8 @@ async function initMultiplayer() {
       cityRoom = null;
       p2pSend = null;
       if (onlineEl) onlineEl.textContent = `Сеть: подключение ${attempt}/6…`;
-      await connectSupabaseMultiplayer(roomId);
-      showToast('Гостевая сеть готова · запишитесь на Раунд 1');
+      await connectSupabaseMultiplayer(roomId, null, true);
+      showToast('Резервная гостевая сеть готова · запишитесь на Раунд 1');
       if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;
       return;
     } catch (error) {
@@ -895,7 +921,7 @@ function syncRound1RemotePresence(members) {
       x: spawn.x,
       y: spawn.y,
       z: spawn.z,
-      rot: spawn.yaw || 0,
+      rot: participating ? (spawn.rot ?? 0) : (spawn.yaw || 0),
       moving: 0,
       avatar: member.avatar || null
     });
@@ -946,9 +972,10 @@ function handleRound1Presence(members) {
   maybeAutoStartRound1();
 }
 
-async function connectSupabaseMultiplayer(roomId) {
-  cityRoom = (supabaseClient ? createRealtimeRoom : createPeerFallbackRoom)({
-    client: supabaseClient,
+async function connectSupabaseMultiplayer(roomId, clientOverride = supabaseClient, forcePeer = false) {
+  const roomClient = forcePeer ? null : clientOverride;
+  cityRoom = (roomClient ? createRealtimeRoom : createPeerFallbackRoom)({
+    client: roomClient,
     topic: `${ROUND1_ROOM_KEY}:${roomId}`,
     playerId,
     displayName: currentUser?.name,
@@ -956,6 +983,7 @@ async function connectSupabaseMultiplayer(roomId) {
     presence: {
       feature: ROUND1_ROOM_KEY,
       joined: false,
+      joinedAt: 0,
       avatar: customAvatarUrl || currentUser?.avatarUrl || null
     },
     onMessage: (payload) => {
@@ -986,6 +1014,7 @@ async function connectSupabaseMultiplayer(roomId) {
   await cityRoom.track({
     feature: ROUND1_ROOM_KEY,
     joined: false,
+    joinedAt: 0,
     avatar: customAvatarUrl || currentUser?.avatarUrl || null
   });
   handleRound1Presence(cityRoom.members());
@@ -1001,24 +1030,48 @@ function setupRound1UI() {
   round1Question = document.getElementById('round1-question');
   round1Counter = document.getElementById('round1-counter');
   round1StartButton = document.getElementById('round1-start');
+  round1CancelButton = document.getElementById('round1-cancel');
   round1WaitingNotice = document.getElementById('round1-waiting');
   round1WaitingNotice?.classList.add('hidden');
   round1Hud?.classList.remove('hidden');
+
   if (round1StartButton && !round1StartButton.dataset.round1Bound) {
     round1StartButton.dataset.round1Bound = '1';
-    let lastTouchJoin = 0;
-    const joinAction = (event) => {
+    let lastTouchAction = 0;
+    const primaryAction = (event) => {
       event?.stopPropagation?.();
-      setRound1Registration(!round1Joined);
+      if (!round1Joined) {
+        setRound1Registration(true);
+        return;
+      }
+      if (round1HostId === String(playerId)) startRound1Match(round1RegisteredIds());
     };
     round1StartButton.addEventListener('click', (event) => {
-      if (Date.now() - lastTouchJoin < 700) return;
-      joinAction(event);
+      if (Date.now() - lastTouchAction < 700) return;
+      primaryAction(event);
     });
     round1StartButton.addEventListener('touchend', (event) => {
       event.preventDefault();
-      lastTouchJoin = Date.now();
-      joinAction(event);
+      lastTouchAction = Date.now();
+      primaryAction(event);
+    }, { passive: false });
+  }
+
+  if (round1CancelButton && !round1CancelButton.dataset.round1Bound) {
+    round1CancelButton.dataset.round1Bound = '1';
+    let lastTouchCancel = 0;
+    const cancel = (event) => {
+      event?.stopPropagation?.();
+      if (round1Joined) setRound1Registration(false);
+    };
+    round1CancelButton.addEventListener('click', (event) => {
+      if (Date.now() - lastTouchCancel < 700) return;
+      cancel(event);
+    });
+    round1CancelButton.addEventListener('touchend', (event) => {
+      event.preventDefault();
+      lastTouchCancel = Date.now();
+      cancel(event);
     }, { passive: false });
   }
   updateRound1LobbyUI();
@@ -1032,22 +1085,39 @@ function round1MemberIds() {
 }
 
 function round1RegisteredIds() {
-  const ids = registeredPlayerIds(round1Members || []);
-  if (round1Joined && playerId && !ids.includes(String(playerId))) ids.push(String(playerId));
-  if (round1DebugBot?.joined && !ids.includes(round1DebugBot.id)) ids.push(round1DebugBot.id);
-  return [...new Set(ids)].slice(0, ROUND1_MAX_PLAYERS);
+  const byId = new Map();
+  for (const member of round1Members || []) {
+    const id = round1PresenceId(member);
+    if (!id || !member?.joined) continue;
+    byId.set(id, { id, joinedAt: Number(member.joinedAt || 0) });
+  }
+  if (round1Joined && playerId) {
+    byId.set(String(playerId), { id: String(playerId), joinedAt: Number(round1JoinedAt || Date.now()) });
+  }
+  if (round1DebugBot?.joined) {
+    byId.set(round1DebugBot.id, { id: round1DebugBot.id, joinedAt: Number(round1DebugBot.joinedAt || Date.now() + 1) });
+  }
+  return [...byId.values()]
+    .sort((a, b) => {
+      const at = a.joinedAt > 0 ? a.joinedAt : Number.MAX_SAFE_INTEGER;
+      const bt = b.joinedAt > 0 ? b.joinedAt : Number.MAX_SAFE_INTEGER;
+      return at - bt || a.id.localeCompare(b.id);
+    })
+    .map((entry) => entry.id)
+    .slice(0, ROUND1_MAX_PLAYERS);
 }
 
 function updateLocalPresenceCache(joined) {
   const id = String(playerId || '');
+  const joinedAt = joined ? Number(round1JoinedAt || Date.now()) : 0;
   let found = false;
   round1Members = (round1Members || []).map((member) => {
     if (round1PresenceId(member) !== id) return member;
     found = true;
-    return { ...member, id, key: member.key || id, joined: Boolean(joined), avatar: customAvatarUrl || currentUser?.avatarUrl || null };
+    return { ...member, id, key: member.key || id, joined: Boolean(joined), joinedAt, avatar: customAvatarUrl || currentUser?.avatarUrl || null };
   });
   if (!found && id) {
-    round1Members.push({ id, key: id, name: currentUser?.name || 'Игрок', joined: Boolean(joined), avatar: customAvatarUrl || currentUser?.avatarUrl || null });
+    round1Members.push({ id, key: id, name: currentUser?.name || 'Игрок', joined: Boolean(joined), joinedAt, avatar: customAvatarUrl || currentUser?.avatarUrl || null });
   }
 }
 
@@ -1058,7 +1128,10 @@ async function setRound1Registration(joined) {
     return;
   }
   round1JoinBusy = true;
-  round1Joined = Boolean(joined);
+  const nextJoined = Boolean(joined);
+  if (nextJoined && !round1JoinedAt) round1JoinedAt = Date.now();
+  if (!nextJoined) round1JoinedAt = 0;
+  round1Joined = nextJoined;
   updateLocalPresenceCache(round1Joined);
   if (round1Joined) {
     resetLocalRound1Flags();
@@ -1070,6 +1143,7 @@ async function setRound1Registration(joined) {
       await cityRoom.track({
         feature: ROUND1_ROOM_KEY,
         joined: round1Joined,
+        joinedAt: round1Joined ? round1JoinedAt : 0,
         avatar: customAvatarUrl || currentUser?.avatarUrl || null
       });
       round1Members = cityRoom.members();
@@ -1082,32 +1156,15 @@ async function setRound1Registration(joined) {
     showToast('Не удалось изменить запись. Попробуйте ещё раз.');
   } finally {
     round1JoinBusy = false;
-    updateRound1LobbyUI();
     maybeAutoStartRound1();
+    updateRound1LobbyUI();
   }
 }
 
 function maybeAutoStartRound1() {
-  if (round1State || !round1RealtimeReady) return;
+  if (round1State) return;
   const queued = round1RegisteredIds();
-  if (queued.length < ROUND1_MIN_PLAYERS) {
-    if (round1AutoStartTimer) window.clearTimeout(round1AutoStartTimer);
-    round1AutoStartTimer = 0;
-    return;
-  }
-  const host = chooseHostId(queued);
-  round1HostId = host;
-  if (host !== String(playerId) || round1AutoStartTimer) return;
-  round1AutoStartTimer = window.setTimeout(() => {
-    round1AutoStartTimer = 0;
-    if (round1State) return;
-    const fresh = round1RegisteredIds();
-    if (fresh.length < ROUND1_MIN_PLAYERS) {
-      updateRound1LobbyUI();
-      return;
-    }
-    startRound1Match(fresh.slice(0, ROUND1_MIN_PLAYERS));
-  }, 650);
+  round1HostId = queued[0] || null;
 }
 
 function round1LobbySpawnForId(id, ids = round1MemberIds()) {
@@ -1158,6 +1215,7 @@ function updateRound1LobbyUI() {
   round1Hud.classList.remove('hidden');
   if (round1State) {
     round1StartButton?.classList.add('hidden');
+    round1CancelButton?.classList.add('hidden');
     refreshRound1Visuals();
     return;
   }
@@ -1166,31 +1224,44 @@ function updateRound1LobbyUI() {
   if (player) player.visible = true;
   const online = round1MemberIds();
   const queued = round1RegisteredIds();
+  round1HostId = queued[0] || null;
+  const isHost = round1Joined && round1HostId === String(playerId);
   placeLocalOnLobbySlot();
+
   if (round1Question) round1Question.textContent = 'Запись на Раунд 1';
-  if (round1Counter) round1Counter.textContent = `Записано: ${queued.length} / ${ROUND1_MIN_PLAYERS} · онлайн ${online.length}`;
+  if (round1Counter) round1Counter.textContent = `Записано: ${queued.length} · онлайн ${online.length}`;
   if (round1Status) {
     round1Status.className = 'round1-status';
     if (!round1RealtimeReady && !round1DebugBot) {
       round1Status.textContent = 'Подключение к сетевой комнате…';
     } else if (!round1Joined) {
-      round1Status.textContent = `Нажмите «Записаться на участие». Игра стартует автоматически после набора ${ROUND1_MIN_PLAYERS} игроков.`;
-    } else if (queued.length < ROUND1_MIN_PLAYERS) {
-      round1Status.textContent = `Вы записаны. Ожидаем ещё ${ROUND1_MIN_PLAYERS - queued.length} игрока.`;
-    } else {
-      round1Status.textContent = 'Набор завершён. Готовим общий отсчёт…';
+      round1Status.textContent = 'Запишитесь на участие. Первый записавшийся игрок управляет стартом матча.';
+    } else if (isHost) {
+      round1Status.textContent = `Вы ведущий. Сейчас записано ${queued.length}. Можно начать игру или подождать других.`;
       round1Status.classList.add('gold');
+    } else {
+      round1Status.textContent = `Вы записаны. Игроков в очереди: ${queued.length}. Ожидаем запуска ведущим.`;
     }
   }
+
   if (round1StartButton) {
     round1StartButton.classList.remove('hidden');
     round1StartButton.classList.toggle('joined', round1Joined);
-    round1StartButton.disabled = round1JoinBusy || (!round1RealtimeReady && !round1DebugBot);
-    round1StartButton.textContent = round1JoinBusy
-      ? 'Синхронизация…'
-      : (round1Joined ? 'Отменить запись' : 'Записаться на участие');
+    if (!round1Joined) {
+      round1StartButton.disabled = round1JoinBusy || (!round1RealtimeReady && !round1DebugBot);
+      round1StartButton.textContent = round1JoinBusy ? 'Синхронизация…' : 'Записаться на участие';
+    } else if (isHost) {
+      round1StartButton.disabled = round1JoinBusy || queued.length < 1;
+      round1StartButton.textContent = `Начать игру · ${queued.length}`;
+    } else {
+      round1StartButton.disabled = true;
+      round1StartButton.textContent = 'Ожидаем ведущего';
+    }
   }
-  maybeAutoStartRound1();
+  if (round1CancelButton) {
+    round1CancelButton.classList.toggle('hidden', !round1Joined);
+    round1CancelButton.disabled = round1JoinBusy;
+  }
 }
 
 function setupRound1DebugMode() {
@@ -1216,12 +1287,12 @@ function setupRound1DebugMode() {
 }
 
 function round1SpawnForId(id, ids = round1RegisteredIds()) {
-  const order = [...ids].sort();
+  const order = [...ids];
   const index = Math.max(0, order.indexOf(String(id)));
   const count = Math.max(1, order.length);
   const spread = Math.min(24, Math.max(5, (count - 1) * 3.2));
   const x = count === 1 ? 0 : -spread / 2 + (spread * index) / (count - 1);
-  return { x, y: 0.32, z: ROUND1_START_Z - 3.2, yaw: 0 };
+  return { x, y: 0.32, z: ROUND1_START_Z - 3.2, yaw: Math.PI, rot: 0 };
 }
 
 function resetLocalRound1Flags() {
@@ -1240,14 +1311,21 @@ function teleportLocalToRound1Start(state) {
   const spawn = round1SpawnForId(playerId, participants);
   player.visible = true;
   player.position.set(spawn.x, spawn.y, spawn.z);
+  cameraMode = 'follow';
+  freeCam = false;
   yaw = spawn.yaw;
-  player.rotation.y = yaw;
+  pitch = 0.14;
+  player.rotation.y = spawn.rot;
   currentSpeed = 0;
   velocityY = 0;
   isGrounded = true;
   moveTarget = null;
   lastPoseX = player.position.x;
   lastPoseZ = player.position.z;
+  if (camera) {
+    camera.position.set(spawn.x, spawn.y + 3.0, spawn.z - 6.4);
+    camera.lookAt(spawn.x, spawn.y + 1.45, spawn.z + 7.5);
+  }
   broadcastPose(true);
 }
 
@@ -1264,7 +1342,7 @@ function prepareRemotePlayersForRound(state) {
       x: spawn.x,
       y: spawn.y,
       z: spawn.z,
-      rot: spawn.yaw,
+      rot: spawn.rot ?? 0,
       moving: 0,
       avatar: member?.avatar || null
     });
@@ -1284,11 +1362,12 @@ function resetRound1ToLobby({ broadcast = false, message = '' } = {}) {
   round1HostTimer = 0;
   round1State = null;
   round1Joined = false;
+  round1JoinedAt = 0;
   resetLocalRound1Flags();
   if (player) player.visible = true;
   updateLocalPresenceCache(false);
   if (cityRoom) {
-    cityRoom.track({ feature: ROUND1_ROOM_KEY, joined: false, avatar: customAvatarUrl || currentUser?.avatarUrl || null }).catch(() => {});
+    cityRoom.track({ feature: ROUND1_ROOM_KEY, joined: false, joinedAt: 0, avatar: customAvatarUrl || currentUser?.avatarUrl || null }).catch(() => {});
   }
   if (broadcast && p2pSend) p2pSend({ type: 'round1_reset', reason: message || 'reset' });
   placeLocalOnLobbySlot();
@@ -1391,9 +1470,9 @@ function refreshRound1Visuals(now = Date.now()) {
 
 function startRound1Match(queuedIds = null) {
   const ids = [...new Set((queuedIds || round1RegisteredIds()).map(String).filter(Boolean))].slice(0, ROUND1_MAX_PLAYERS);
-  const host = chooseHostId(ids);
+  const host = ids[0] || null;
   if (host !== String(playerId)) return;
-  if (ids.length < ROUND1_MIN_PLAYERS) {
+  if (ids.length < 1) {
     updateRound1LobbyUI();
     return;
   }
@@ -4230,22 +4309,19 @@ async function setupMenu() {
     // Register
     document.getElementById('form-register')?.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const username = (document.getElementById('reg-username')?.value || '').trim();
       const displayName = (document.getElementById('reg-name')?.value || '').trim();
       const email = (document.getElementById('reg-email')?.value || '').trim();
       const pass = document.getElementById('reg-pass')?.value || '';
-      const gender = document.querySelector('input[name="gender"]:checked')?.value || 'male';
-      const consent = !!document.getElementById('reg-consent')?.checked;
-      const validationError = validateRegistration({ username, displayName, email, password: pass, consent });
+      const validationError = validateRegistration({ displayName, email, password: pass });
       if (validationError) { setAuthError(validationError); return; }
       if (!cloudEnabled) {
-        setAuthError('Регистрация станет доступна после подключения Supabase. Сейчас можно войти как гость.');
+        setAuthError('Регистрация временно недоступна. Сейчас можно войти как гость.');
         return;
       }
       try {
         setAuthBusy(true);
-        setAuthError('Создаём защищённый аккаунт…');
-        const data = await authService.register({ username, displayName, email, password: pass, gender });
+        setAuthError('Создаём аккаунт…');
+        const data = await authService.register({ displayName, email, password: pass });
         if (!data.session) {
           showAuthForm('login');
           document.getElementById('login-email').value = email;
@@ -4254,7 +4330,8 @@ async function setupMenu() {
         }
         cloudSession = data.session;
         playerId = data.user.id;
-        currentUser = { username, name: displayName, gender, clothes: 'default', avatarUrl: null };
+        const internalUsername = data.internalUsername || `u_${String(data.user.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 20)}`;
+        currentUser = { username: internalUsername, name: displayName, gender: 'male', clothes: 'default', avatarUrl: null };
         await pushProfileToCloud();
         customAvatarUrl = null;
         setAuthError('');
@@ -5583,12 +5660,7 @@ function createRound1Doll() {
   sensor.position.set(0, 7.72, -1.18);
   doll.add(sensor);
 
-  const label = new THREE.Mesh(
-    new THREE.PlaneGeometry(6.2, 1.4),
-    new THREE.MeshBasicMaterial({ map: makeSignTexture('НАБЛЮДАТЕЛЬ', 'двигайтесь только когда он отвернулся', '#0b1729', '#ffffff'), transparent: true })
-  );
-  label.position.set(0, 10.7, 0);
-  doll.add(label);
+  // Keep the watcher silhouette clear: instructions are shown in the HUD/board instead.
   doll.userData.sensorMaterial = accentMat;
   return doll;
 }
@@ -5746,15 +5818,16 @@ function createRoundOneArena() {
   });
 
   round1QuestionBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(18, 4.4),
+    new THREE.PlaneGeometry(16, 3.6),
     new THREE.MeshBasicMaterial({ map: makeSignTexture('РАУНД 1', 'ожидание старта', '#071525', '#ffffff'), transparent: true })
   );
-  round1QuestionBoard.position.set(0, 8.2, 75.5);
+  round1QuestionBoard.position.set(0, 14.2, 73.5);
   round1QuestionBoard.rotation.y = Math.PI;
   arena.add(round1QuestionBoard);
 
   round1Doll = createRound1Doll();
-  round1Doll.position.set(0, 0, 82);
+  round1Doll.position.set(0, 0, 71.5);
+  round1Doll.scale.setScalar(1.16);
   round1Doll.rotation.y = Math.PI; // green: looking away
   arena.add(round1Doll);
 

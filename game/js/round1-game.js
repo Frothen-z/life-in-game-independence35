@@ -1,7 +1,7 @@
-export const ROUND1_REQUIRED_PLAYERS = 2;
+export const ROUND1_REQUIRED_PLAYERS = 1;
 export const ROUND1_MIN_PLAYERS = ROUND1_REQUIRED_PLAYERS;
 export const ROUND1_MAX_PLAYERS = 8;
-export const ROUND1_COUNTDOWN_MS = 7000;
+export const ROUND1_COUNTDOWN_MS = 10000;
 export const ROUND1_CHECKPOINT_Z = Object.freeze([-8, 10, 28, 46, 64]);
 export const ROUND1_LANE_X = Object.freeze([-10, 0, 10]);
 export const ROUND1_ZONE_HALF_W = 3.4;
@@ -192,5 +192,5 @@ export function allActiveReported(state, priorActiveIds = null) {
 
 export function greenDurationMs(seed, checkpointIndex) {
   const unit = seededUnit((Number(seed) + Math.imul(Number(checkpointIndex) + 11, 1103515245)) >>> 0);
-  return Math.round(4300 + unit * 2300);
+  return Math.round(9500 + unit * 3500);
 }

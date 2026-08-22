@@ -1,4 +1,9 @@
-const USERNAME_RE = /^[a-z0-9_]{3,24}$/;
+function createInternalUsername() {
+  let token = '';
+  try { token = globalThis.crypto?.randomUUID?.() || ''; } catch {}
+  if (!token) token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `u_${token.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 20)}`;
+}
 const PHOTO_TYPES = new Map([
   ['image/jpeg', 'jpg'],
   ['image/png', 'png'],
@@ -9,15 +14,10 @@ export function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase().normalize('NFKC');
 }
 
-export function validateRegistration({ username, displayName, email, password, consent }) {
-  const normalizedUsername = normalizeUsername(username);
-  if (!USERNAME_RE.test(normalizedUsername)) {
-    return 'Логин: 3–24 символа, только латинские буквы, цифры и _';
-  }
-  if (String(displayName || '').trim().length < 2) return 'Имя должно содержать минимум 2 символа';
+export function validateRegistration({ displayName, email, password }) {
+  if (!String(displayName || '').trim()) return 'Введите имя';
   if (!/^\S+@\S+\.\S+$/.test(String(email || '').trim())) return 'Введите корректный email';
-  if (String(password || '').length < 8) return 'Пароль должен содержать минимум 8 символов';
-  if (!consent) return 'Нужно принять правила и политику конфиденциальности';
+  if (!String(password || '')) return 'Введите пароль';
   return '';
 }
 
@@ -60,17 +60,17 @@ export async function createAuthService() {
     return data.session;
   }
 
-  async function register({ username, displayName, email, password, gender }) {
-    const cleanUsername = normalizeUsername(username);
+  async function register({ displayName, email, password }) {
+    const internalUsername = createInternalUsername();
     const cleanName = String(displayName || '').trim();
     const cleanEmail = String(email || '').trim().toLowerCase();
     const { data, error } = await client.auth.signUp({
       email: cleanEmail,
       password,
-      options: { data: { username: cleanUsername, name: cleanName, gender } }
+      options: { data: { username: internalUsername, name: cleanName, gender: 'male' } }
     });
     if (error) throw error;
-    return data;
+    return { ...data, internalUsername };
   }
 
   async function login(email, password) {
@@ -179,8 +179,7 @@ export function authErrorMessage(error) {
   const text = String(error?.message || error || '').toLowerCase();
   if (text.includes('invalid login')) return 'Неверный email или пароль';
   if (text.includes('already') || text.includes('registered')) return 'Этот email уже зарегистрирован';
-  if (text.includes('username') || text.includes('duplicate') || text.includes('unique')) return 'Такой логин уже занят';
-  if (text.includes('password')) return 'Пароль должен содержать минимум 8 символов';
+  if (text.includes('password')) return 'Проверьте пароль и попробуйте ещё раз';
   if (text.includes('rate')) return 'Слишком много попыток. Попробуйте немного позже';
   if (text.includes('email')) return 'Проверьте адрес электронной почты';
   return 'Операция не выполнена. Проверьте подключение и попробуйте снова';
