@@ -1,1 +1,1 @@
-trigger guest lobby P2P repair
+trigger guest lobby P2P repair v2
