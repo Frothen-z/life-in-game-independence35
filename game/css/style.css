@@ -2172,6 +2172,7 @@ html, body {
 .round1-waiting{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:46;width:min(560px,calc(100vw - 32px));
   padding:15px 20px;border-radius:16px;background:rgba(15,23,42,.94);border:1px solid rgba(248,113,113,.42);color:#fff;text-align:center;
   box-shadow:0 18px 48px rgba(0,0,0,.34)}
+.round1-waiting.hidden{display:none!important}
 .round1-waiting strong{display:block;color:#fca5a5;font-size:18px}.round1-waiting span{display:block;margin-top:4px;color:#cbd5e1;font-size:13px}
 body.round1-mode #city-guide{display:none!important}
 body.round1-mode #btn-social{display:none!important}

@@ -8,6 +8,7 @@ import { createGovernmentStreet, tryOpenGovNearPlayer, govHintText, setupGovUI, 
 import { createLifecycle } from './core/lifecycle.js';
 import { createAuthService, validateRegistration, authErrorMessage } from './services/auth-service.js';
 import { createRealtimeRoom } from './services/realtime-room.js';
+import { createPeerFallbackRoom } from './services/peer-room.js';
 import { createMediaRoom, isMediaSignal } from './services/media-room.js';
 import { sanitizeMafiaState } from './services/game-rules.js';
 import { initSocialUI, disposeSocialUI } from './social.js';
@@ -830,9 +831,8 @@ async function initMultiplayer() {
       console.error('Supabase realtime failed', e);
       round1RealtimeReady = false;
       updateRound1LobbyUI();
-      showToast('Не удалось подключиться к сетевой комнате');
-      if (onlineEl) onlineEl.textContent = 'Сеть недоступна';
-      return;
+      showToast('Основная сеть недоступна · подключаем резервную P2P-сеть…');
+      if (onlineEl) onlineEl.textContent = 'Сеть: переключение…';
     }
   }
 
@@ -843,12 +843,21 @@ async function initMultiplayer() {
     return;
   }
 
-  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];
-  round1HostId = playerId;
-  round1RealtimeReady = false;
-  updateRound1LobbyUI();
-  showToast('Сетевой режим недоступен: не получены настройки Supabase');
-  if (onlineEl) onlineEl.textContent = 'Сеть не настроена';
+  try {
+    await connectSupabaseMultiplayer(roomId);
+    showToast('Гостевая P2P-сеть готова · запишитесь на Раунд 1');
+    if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;
+    return;
+  } catch (peerError) {
+    console.error('Peer fallback failed', peerError);
+    round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];
+    round1HostId = playerId;
+    round1RealtimeReady = false;
+    resetLocalRound1Flags();
+    updateRound1LobbyUI();
+    showToast('Не удалось подключиться к сетевой комнате. Проверьте интернет и обновите страницу.');
+    if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';
+  }
 }
 
 function round1PresenceId(member) {
@@ -928,7 +937,7 @@ function handleRound1Presence(members) {
 }
 
 async function connectSupabaseMultiplayer(roomId) {
-  cityRoom = createRealtimeRoom({
+  cityRoom = (supabaseClient ? createRealtimeRoom : createPeerFallbackRoom)({
     client: supabaseClient,
     topic: `${ROUND1_ROOM_KEY}:${roomId}`,
     playerId,
@@ -950,7 +959,7 @@ async function connectSupabaseMultiplayer(roomId) {
     onStatus: (status) => {
       if (status === 'SUBSCRIBED') {
         round1RealtimeReady = true;
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING') {
         round1RealtimeReady = false;
       }
       updateRound1LobbyUI();
@@ -1123,7 +1132,7 @@ function updateRound1LobbyUI() {
   if (round1Status) {
     round1Status.className = 'round1-status';
     if (!round1RealtimeReady && !round1DebugBot) {
-      round1Status.textContent = supabaseClient ? 'Подключение к сетевой комнате…' : 'Сетевой режим не настроен. Проверьте Supabase runtime config.';
+      round1Status.textContent = 'Подключение к сетевой комнате…';
     } else if (!round1Joined) {
       round1Status.textContent = `Нажмите «Записаться на участие». Игра стартует автоматически после набора ${ROUND1_MIN_PLAYERS} игроков.`;
     } else if (queued.length < ROUND1_MIN_PLAYERS) {
