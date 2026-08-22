@@ -45,12 +45,10 @@ jobs:
           old_status = "status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED'"
           new_status = "status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING'"
           text = text.replace(old_status, new_status)
-
           text = text.replace(
               "supabaseClient ? 'Подключение к сетевой комнате…' : 'Сетевой режим не настроен. Проверьте Supabase runtime config.'",
               "'Подключение к сетевой комнате…'"
           )
-
           main.write_text(text, encoding='utf-8')
 
           css = Path('game/css/style.css')
@@ -63,8 +61,9 @@ jobs:
 
           html = Path('game/index.html')
           h = html.read_text(encoding='utf-8')
-          h = h.replace('css/style.css?v=round1-1', 'css/style.css?v=round1-peer-4')
-          h = h.replace('js/main.js?v=round1-guest-2', 'js/main.js?v=round1-peer-4')
+          for old_version in ('round1-1', 'round1-guest-2', 'round1-peer-4'):
+              h = h.replace(f'css/style.css?v={old_version}', 'css/style.css?v=round1-peer-5')
+              h = h.replace(f'js/main.js?v={old_version}', 'js/main.js?v=round1-peer-5')
           html.write_text(h, encoding='utf-8')
       - name: Syntax and invariant checks
         run: |
@@ -81,29 +80,59 @@ jobs:
           assert "Peer fallback failed" in main
           assert "Сетевой режим не настроен. Проверьте Supabase runtime config." not in main
           assert ".round1-waiting.hidden{display:none!important}" in css
-          assert "round1-peer-4" in html
+          assert 'css/style.css?v=round1-peer-5' in html
+          assert 'js/main.js?v=round1-peer-5' in html
           print('guest lobby invariants ok')
           PY
+      - name: Peer fallback two-player mock test
+        run: |
+          cp game/js/services/peer-room.js /tmp/peer-room.mjs
+          cat >/tmp/test-peer-room.mjs <<'JS'
+          import { EventEmitter } from 'node:events';
+          class FakeConn extends EventEmitter {
+            constructor(peer){ super(); this.peer=peer; this.open=false; this.other=null; }
+            send(data){ if(this.open&&this.other?.open) queueMicrotask(()=>this.other.emit('data',structuredClone(data))); }
+            close(){ if(!this.open)return; this.open=false; const o=this.other; queueMicrotask(()=>this.emit('close')); if(o?.open){o.open=false;queueMicrotask(()=>o.emit('close'));} }
+          }
+          class FakePeer extends EventEmitter {
+            static peers=new Map();
+            constructor(id){ super(); this.id=id||`auto_${Math.random().toString(36).slice(2)}`; queueMicrotask(()=>{ if(FakePeer.peers.has(this.id)) this.emit('error',{type:'unavailable-id'}); else {FakePeer.peers.set(this.id,this);this.emit('open',this.id);} }); }
+            connect(targetId){ const client=new FakeConn(targetId); queueMicrotask(()=>{ const target=FakePeer.peers.get(targetId); if(!target){this.emit('error',{type:'peer-unavailable'});client.emit('error',new Error('missing'));return;} const server=new FakeConn(this.id);client.other=server;server.other=client;target.emit('connection',server);client.open=server.open=true;queueMicrotask(()=>{server.emit('open');client.emit('open');}); }); return client; }
+            destroy(){ if(FakePeer.peers.get(this.id)===this) FakePeer.peers.delete(this.id); }
+          }
+          globalThis.Peer=FakePeer;
+          const {createPeerFallbackRoom}=await import('file:///tmp/peer-room.mjs');
+          const msgA=[],msgB=[];
+          const a=createPeerFallbackRoom({topic:'round1:main',playerId:'g_a',displayName:'A',presence:{joined:false},onMessage:m=>msgA.push(m)});
+          const b=createPeerFallbackRoom({topic:'round1:main',playerId:'g_b',displayName:'B',presence:{joined:false},onMessage:m=>msgB.push(m)});
+          await a.connect(); await b.connect(); await new Promise(r=>setTimeout(r,30));
+          if(a.members().length!==2||b.members().length!==2) throw new Error(`presence ${a.members().length}/${b.members().length}`);
+          await a.track({joined:true}); await b.track({joined:true}); await new Promise(r=>setTimeout(r,30));
+          if(!a.members().every(x=>x.joined)||!b.members().every(x=>x.joined)) throw new Error('registration sync failed');
+          await b.send({type:'pose',x:1}); await new Promise(r=>setTimeout(r,10));
+          if(msgA.at(-1)?.from!=='g_b'||msgA.at(-1)?.x!==1) throw new Error('client to host relay failed');
+          await a.send({type:'round1_state',state:{phase:'countdown'}}); await new Promise(r=>setTimeout(r,10));
+          if(msgB.at(-1)?.type!=='round1_state') throw new Error('host to client relay failed');
+          await a.close(); await b.close();
+          console.log('peer two-player mock ok');
+          JS
+          node /tmp/test-peer-room.mjs
+          curl -fsSI https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js >/dev/null
       - name: Round 1 logic checks
         run: |
           node --input-type=module <<'JS'
           import { checkpointFor, evaluateCheckpoint, createRoundState, registeredPlayerIds, isRoundParticipant } from './game/js/round1-game.js';
-          const members = [
-            {id:'g_a', joined:true},
-            {id:'g_b', joined:true},
-            {id:'g_c', joined:false}
-          ];
-          const ids = registeredPlayerIds(members);
-          if (ids.length !== 2) throw new Error('queue count failed');
-          const state = createRoundState(ids, 1000, 77);
-          if (!isRoundParticipant(state, 'g_a') || isRoundParticipant(state, 'g_c')) throw new Error('participant isolation failed');
-          for (let i=0;i<5;i++) {
-            const cp = checkpointFor(i, 77);
-            const zone = cp.zones.find(z => z.year === cp.correctYear);
-            const ok = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp});
-            if (!ok.pass) throw new Error('checkpoint '+i+' correct answer failed');
-            const moved = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:.4,checkpoint:cp});
-            if (moved.pass || moved.reason !== 'movement') throw new Error('movement elimination failed');
+          const members=[{id:'g_a',joined:true},{id:'g_b',joined:true},{id:'g_c',joined:false}];
+          const ids=registeredPlayerIds(members);
+          if(ids.length!==2) throw new Error('queue count failed');
+          const state=createRoundState(ids,1000,77);
+          if(!isRoundParticipant(state,'g_a')||isRoundParticipant(state,'g_c')) throw new Error('participant isolation failed');
+          for(let i=0;i<5;i++){
+            const cp=checkpointFor(i,77); const zone=cp.zones.find(z=>z.year===cp.correctYear);
+            const ok=evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp});
+            if(!ok.pass) throw new Error('checkpoint '+i+' correct answer failed');
+            const moved=evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:.4,checkpoint:cp});
+            if(moved.pass||moved.reason!=='movement') throw new Error('movement elimination failed');
           }
           console.log('round1 logic ok');
           JS
@@ -116,5 +145,5 @@ jobs:
             echo "No game changes"
             exit 0
           fi
-          git commit -m "Fix guest lobby and add P2P fallback"
+          git commit -m "Refresh Round 1 guest network assets"
           git push origin HEAD:main
