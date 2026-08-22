@@ -1,1 +1,1 @@
-run production two-guest browser smoke
+run production two-guest browser smoke v2
