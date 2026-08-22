@@ -134,6 +134,7 @@ let authService = null;
 let cloudSession = null;
 let cloudEnabled = false;
 let playerId = null;
+let guestConnectionId = null;
 let clothingMeshes = { look: [], shoes: [], body: [], hair: [] };
 let worldAnimators = [];
 let navigationTarget = null;
@@ -620,18 +621,19 @@ function submitOrder() {
 // ========== PROFILE + MULTIPLAYER ==========
 function ensurePlayerId() {
   if (!currentUser) return null;
-  if (cloudSession?.user?.id) {
-    playerId = cloudSession.user.id;
+  if (cloudSession?.user?.id && !currentUser?.isGuest) {
+    playerId = String(cloudSession.user.id);
     return playerId;
   }
-  const key = 'cityExplorer_pid_' + (currentUser.username || currentUser.name).toLowerCase();
-  let id = localStorage.getItem(key);
-  if (!id) {
-    id = 'u_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now().toString(36);
-    localStorage.setItem(key, id);
+  if (!guestConnectionId) {
+    let token = '';
+    try { token = globalThis.crypto?.randomUUID?.() || ''; } catch {}
+    if (!token) token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+    guestConnectionId = `g_${String(token).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
   }
-  playerId = id;
-  return id;
+  playerId = guestConnectionId;
+  try { localStorage.removeItem('ce_pid'); } catch {}
+  return playerId;
 }
 
 function getProfileData() {
@@ -804,6 +806,8 @@ async function initMultiplayer() {
 
   round1RealtimeReady = false;
   round1Joined = false;
+  round1State = null;
+  round1LastPhaseKey = '';
   resetLocalRound1Flags();
 
   if (hasCloudAccount()) {
@@ -815,10 +819,12 @@ async function initMultiplayer() {
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 32) || 'round1-main';
 
-  if (hasCloudAccount()) {
+  if (supabaseClient) {
     try {
       await connectSupabaseMultiplayer(roomId);
-      showToast('Сетевой режим готов · запишитесь на Раунд 1');
+      showToast(currentUser?.isGuest
+        ? 'Гостевой сетевой режим готов · запишитесь на Раунд 1'
+        : 'Сетевой режим готов · запишитесь на Раунд 1');
       return;
     } catch (e) {
       console.error('Supabase realtime failed', e);
@@ -841,8 +847,8 @@ async function initMultiplayer() {
   round1HostId = playerId;
   round1RealtimeReady = false;
   updateRound1LobbyUI();
-  showToast('Для сетевой игры войдите в аккаунт');
-  if (onlineEl) onlineEl.textContent = 'Гость · только вы';
+  showToast('Сетевой режим недоступен: не получены настройки Supabase');
+  if (onlineEl) onlineEl.textContent = 'Сеть не настроена';
 }
 
 function round1PresenceId(member) {
@@ -927,6 +933,7 @@ async function connectSupabaseMultiplayer(roomId) {
     topic: `${ROUND1_ROOM_KEY}:${roomId}`,
     playerId,
     displayName: currentUser?.name,
+    privateChannel: false,
     presence: {
       feature: ROUND1_ROOM_KEY,
       joined: false,
@@ -939,7 +946,15 @@ async function connectSupabaseMultiplayer(roomId) {
       const entry = remotePlayers.get(payload.id);
       if (entry) entry.lastSeen = Date.now();
     },
-    onPresence: handleRound1Presence
+    onPresence: handleRound1Presence,
+    onStatus: (status) => {
+      if (status === 'SUBSCRIBED') {
+        round1RealtimeReady = true;
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        round1RealtimeReady = false;
+      }
+      updateRound1LobbyUI();
+    }
   });
   await cityRoom.connect();
   p2pSend = (payload) => {
@@ -1007,7 +1022,7 @@ function updateLocalPresenceCache(joined) {
 async function setRound1Registration(joined) {
   if (round1JoinBusy || round1State) return;
   if (!round1RealtimeReady && !round1DebugBot) {
-    showToast(hasCloudAccount() ? 'Сетевая комната ещё не подключена' : 'Войдите в аккаунт для участия');
+    showToast('Сетевая комната ещё не подключена. Подождите несколько секунд или обновите страницу.');
     return;
   }
   round1JoinBusy = true;
@@ -1059,7 +1074,7 @@ function maybeAutoStartRound1() {
       updateRound1LobbyUI();
       return;
     }
-    startRound1Match(fresh);
+    startRound1Match(fresh.slice(0, ROUND1_MIN_PLAYERS));
   }, 650);
 }
 
@@ -1108,7 +1123,7 @@ function updateRound1LobbyUI() {
   if (round1Status) {
     round1Status.className = 'round1-status';
     if (!round1RealtimeReady && !round1DebugBot) {
-      round1Status.textContent = hasCloudAccount() ? 'Подключение к сетевой комнате…' : 'Войдите в аккаунт, чтобы участвовать в сетевом матче.';
+      round1Status.textContent = supabaseClient ? 'Подключение к сетевой комнате…' : 'Сетевой режим не настроен. Проверьте Supabase runtime config.';
     } else if (!round1Joined) {
       round1Status.textContent = `Нажмите «Записаться на участие». Игра стартует автоматически после набора ${ROUND1_MIN_PLAYERS} игроков.`;
     } else if (queued.length < ROUND1_MIN_PLAYERS) {
@@ -4563,10 +4578,7 @@ async function init() {
     setupEvents();
     setupRestaurantUI();
     setupMafiaUI();
-    if (!playerId) {
-      try { playerId = localStorage.getItem('ce_pid') || ('p_' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('ce_pid', playerId); }
-      catch { playerId = 'p_' + Math.random().toString(36).slice(2, 10); }
-    }
+    ensurePlayerId();
     setupRound1UI();
     initClubs({
       get player() { return player; },

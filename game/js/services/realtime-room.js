@@ -18,6 +18,7 @@ export function createRealtimeRoom({
   playerId,
   displayName,
   presence = {},
+  privateChannel = true,
   onMessage,
   onPresence,
   onStatus
@@ -60,7 +61,7 @@ export function createRealtimeRoom({
 
       channel = client.channel(safeTopic, {
         config: {
-          private: true,
+          private: Boolean(privateChannel),
           broadcast: { self: false, ack: true },
           presence: { key: safePlayerId }
         }
