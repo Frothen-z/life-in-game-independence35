@@ -18,7 +18,7 @@ jobs:
           npx playwright install --with-deps chromium >/dev/null
       - name: Test two real guest browsers on production
         run: |
-          cat > /tmp/round1-smoke.mjs <<'JS'
+          cat > round1-smoke.mjs <<'JS'
           import { chromium } from 'playwright';
           const base='https://life-in-game-independence35.vercel.app/game/?room=ci-browser-smoke';
           const browser=await chromium.launch({headless:true,args:['--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader','--disable-dev-shm-usage']});
@@ -67,4 +67,4 @@ jobs:
           await a.context.close(); await b.context.close(); await browser.close();
           console.log('REAL TWO-GUEST PRODUCTION SMOKE PASSED');
           JS
-          node /tmp/round1-smoke.mjs
+          node round1-smoke.mjs
