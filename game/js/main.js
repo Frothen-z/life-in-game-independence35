@@ -844,12 +844,12 @@ async function initMultiplayer() {
   }
 
   let peerError = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
     try {
       try { await cityRoom?.close?.(); } catch {}
       cityRoom = null;
       p2pSend = null;
-      if (onlineEl) onlineEl.textContent = `Сеть: подключение ${attempt}/3…`;
+      if (onlineEl) onlineEl.textContent = `Сеть: подключение ${attempt}/6…`;
       await connectSupabaseMultiplayer(roomId);
       showToast('Гостевая сеть готова · запишитесь на Раунд 1');
       if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;
@@ -857,7 +857,7 @@ async function initMultiplayer() {
     } catch (error) {
       peerError = error;
       console.warn(`Peer fallback attempt ${attempt} failed`, error);
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 900 * attempt));
+      if (attempt < 6) await new Promise((resolve) => setTimeout(resolve, Math.min(2800, 450 + 450 * attempt)));
     }
   }
   console.error('Peer fallback failed', peerError);

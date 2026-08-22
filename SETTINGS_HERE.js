@@ -5,5 +5,6 @@
 window.LIFE_IN_GAME_CONFIG = {
   supabaseUrl: "",
   supabaseAnonKey: "",
+  iceServers: [],
   avaturnSubdomain: "demo"
 };

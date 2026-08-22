@@ -1,16 +1,20 @@
+const LOCAL_PEERJS = new URL('../../vendor/peerjs.min.js', import.meta.url).href;
 const PEERJS_SOURCES = [
+  LOCAL_PEERJS,
   'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js',
   'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js'
 ];
-const PEER_ICE_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' }
-  ],
-  iceCandidatePoolSize: 4
-};
-const peerOptions = () => ({ debug: 0, config: PEER_ICE_CONFIG });
+const BASE_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  { urls: 'stun:global.stun.twilio.com:3478' }
+];
+function configuredIceServers() {
+  const extra = globalThis.LIFE_IN_GAME_CONFIG?.iceServers;
+  return Array.isArray(extra) && extra.length ? [...BASE_ICE_SERVERS, ...extra] : BASE_ICE_SERVERS;
+}
+const peerOptions = () => ({ debug: 0, config: { iceServers: configuredIceServers() } });
 let peerJsPromise = null;
 
 function loadPeerJs() {
@@ -26,9 +30,9 @@ function loadPeerJs() {
           const script = document.createElement('script');
           script.src = source;
           script.async = true;
-          script.crossOrigin = 'anonymous';
+          if (source !== LOCAL_PEERJS) script.crossOrigin = 'anonymous';
           script.dataset.lifePeerjs = '1';
-          const timeout = setTimeout(() => reject(new Error('PEERJS_LOAD_TIMEOUT')), 18000);
+          const timeout = setTimeout(() => reject(new Error('PEERJS_LOAD_TIMEOUT')), source === LOCAL_PEERJS ? 5000 : 15000);
           script.onload = () => {
             clearTimeout(timeout);
             globalThis.Peer ? resolve(true) : reject(new Error('PEERJS_GLOBAL_MISSING'));
@@ -239,13 +243,18 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
       });
     });
     peer.on('error', (error) => {
-      if (!settled && String(error?.type || '') !== 'peer-unavailable') {
-        settled = true;
-        clearTimeout(timeout);
-        reject(error);
+      if (settled) return;
+      const type = String(error?.type || '');
+      settled = true;
+      clearTimeout(timeout);
+      if (type === 'peer-unavailable') {
+        reject(new Error('PEER_HOST_UNAVAILABLE'));
+        return;
       }
+      reject(error || new Error('PEER_CLIENT_FAILED'));
     });
     peer.on('disconnected', scheduleReconnect);
+    peer.on('close', scheduleReconnect);
   });
 
   async function startElection() {
