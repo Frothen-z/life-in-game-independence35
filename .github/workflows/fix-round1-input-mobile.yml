@@ -15,10 +15,21 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      - name: Vendor PeerJS locally
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/peerjs-package
+          mkdir -p /tmp/peerjs-package game/vendor
+          TGZ=$(npm pack peerjs@1.5.5 --silent | tail -n 1)
+          tar -xzf "$TGZ" -C /tmp/peerjs-package
+          cp /tmp/peerjs-package/package/dist/peerjs.min.js game/vendor/peerjs.min.js
+          rm -f "$TGZ"
+          test -s game/vendor/peerjs.min.js
       - name: Apply repair
         run: |
           python tools/fix_round1_input_mobile.py
           python tools/fix_round1_cursor.py
+          python tools/fix_mobile_network_start.py
       - name: Syntax and invariant checks
         run: |
           node --check game/js/main.js
@@ -30,16 +41,22 @@ jobs:
           peer=Path('game/js/services/peer-room.js').read_text(encoding='utf-8')
           css=Path('game/css/style.css').read_text(encoding='utf-8')
           html=Path('game/index.html').read_text(encoding='utf-8')
+          settings=Path('SETTINGS_HERE.js').read_text(encoding='utf-8')
+          vendor=Path('game/vendor/peerjs.min.js')
+          assert vendor.exists() and vendor.stat().st_size > 50000
           assert 'function syncRound1InputMode()' in main
-          assert 'Peer fallback attempt' in main
-          assert 'PEERJS_SOURCES' in peer and 'unpkg.com/peerjs' in peer
-          assert 'stun:stun.l.google.com:19302' in peer
+          assert 'attempt <= 6' in main and '${attempt}/6' in main
+          assert 'LOCAL_PEERJS' in peer and "../../vendor/peerjs.min.js" in peer
+          assert 'PEER_HOST_UNAVAILABLE' in peer
+          assert 'stun:stun.relay.metered.ca:80' in peer
+          assert 'iceCandidatePoolSize' not in peer
           assert 'body.round1-mode:not(.round1-playing)' in css
           assert 'body.round1-mode:not(.round1-playing) #mobile-controls { display: none !important; }' in css
           canvas=css.split('#c {',1)[1].split('}',1)[0]
           assert 'cursor: default;' in canvas and 'cursor: none;' not in canvas
-          assert 'round1-mobile-8' in html
-          print('input/mobile/cursor invariants ok')
+          assert 'iceServers: []' in settings
+          assert 'round1-mobile-9' in html
+          print('mobile network startup invariants ok')
           PY
       - name: Round 1 logic checks
         run: |
@@ -60,7 +77,7 @@ jobs:
         run: |
           git config user.name "Frothen-z"
           git config user.email "frothen234@gmail.com"
-          git add game/js/main.js game/js/services/peer-room.js game/css/style.css game/index.html
+          git add game/js/main.js game/js/services/peer-room.js game/css/style.css game/index.html game/vendor/peerjs.min.js SETTINGS_HERE.js
           if git diff --cached --quiet; then echo "No changes"; exit 0; fi
-          git commit -m "Fix Round 1 cursor and mobile guest network"
+          git commit -m "Fix mobile network startup"
           git push origin HEAD:main
