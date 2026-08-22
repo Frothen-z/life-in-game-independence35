@@ -843,21 +843,31 @@ async function initMultiplayer() {
     return;
   }
 
-  try {
-    await connectSupabaseMultiplayer(roomId);
-    showToast('Гостевая P2P-сеть готова · запишитесь на Раунд 1');
-    if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;
-    return;
-  } catch (peerError) {
-    console.error('Peer fallback failed', peerError);
-    round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];
-    round1HostId = playerId;
-    round1RealtimeReady = false;
-    resetLocalRound1Flags();
-    updateRound1LobbyUI();
-    showToast('Не удалось подключиться к сетевой комнате. Проверьте интернет и обновите страницу.');
-    if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';
+  let peerError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      try { await cityRoom?.close?.(); } catch {}
+      cityRoom = null;
+      p2pSend = null;
+      if (onlineEl) onlineEl.textContent = `Сеть: подключение ${attempt}/3…`;
+      await connectSupabaseMultiplayer(roomId);
+      showToast('Гостевая сеть готова · запишитесь на Раунд 1');
+      if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;
+      return;
+    } catch (error) {
+      peerError = error;
+      console.warn(`Peer fallback attempt ${attempt} failed`, error);
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 900 * attempt));
+    }
   }
+  console.error('Peer fallback failed', peerError);
+  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];
+  round1HostId = playerId;
+  round1RealtimeReady = false;
+  resetLocalRound1Flags();
+  updateRound1LobbyUI();
+  showToast('Сеть не подключилась. Проверьте интернет и обновите страницу.');
+  if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';
 }
 
 function round1PresenceId(member) {
@@ -959,7 +969,7 @@ async function connectSupabaseMultiplayer(roomId) {
     onStatus: (status) => {
       if (status === 'SUBSCRIBED') {
         round1RealtimeReady = true;
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING' || status === 'CONNECTING' || status === 'RECONNECTING') {
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING') {
         round1RealtimeReady = false;
       }
       updateRound1LobbyUI();
@@ -996,7 +1006,20 @@ function setupRound1UI() {
   round1Hud?.classList.remove('hidden');
   if (round1StartButton && !round1StartButton.dataset.round1Bound) {
     round1StartButton.dataset.round1Bound = '1';
-    round1StartButton.addEventListener('click', () => setRound1Registration(!round1Joined));
+    let lastTouchJoin = 0;
+    const joinAction = (event) => {
+      event?.stopPropagation?.();
+      setRound1Registration(!round1Joined);
+    };
+    round1StartButton.addEventListener('click', (event) => {
+      if (Date.now() - lastTouchJoin < 700) return;
+      joinAction(event);
+    });
+    round1StartButton.addEventListener('touchend', (event) => {
+      event.preventDefault();
+      lastTouchJoin = Date.now();
+      joinAction(event);
+    }, { passive: false });
   }
   updateRound1LobbyUI();
 }
@@ -1113,8 +1136,25 @@ function placeLocalOnLobbySlot() {
   }
 }
 
+function syncRound1InputMode() {
+  const localParticipant = !!round1State && isRoundParticipant(round1State, playerId);
+  const playing = Boolean(
+    round1State &&
+    localParticipant &&
+    !round1IsSpectator &&
+    round1State.activeIds?.includes(String(playerId)) &&
+    round1State.phase !== 'countdown' &&
+    round1State.phase !== 'finished'
+  );
+  document.body.classList.toggle('round1-playing', playing);
+  if (!playing && document.pointerLockElement) {
+    try { document.exitPointerLock(); } catch {}
+  }
+}
+
 function updateRound1LobbyUI() {
   if (!round1Hud) return;
+  syncRound1InputMode();
   round1Hud.classList.remove('hidden');
   if (round1State) {
     round1StartButton?.classList.add('hidden');
@@ -1417,6 +1457,7 @@ function setRound1State(incoming, options = {}) {
     round1FinishedResetAt = Date.now() + 8000;
   }
   round1StartButton?.classList.add('hidden');
+  syncRound1InputMode();
   refreshRound1Visuals();
 }
 
@@ -1471,6 +1512,7 @@ function handleRound1Message(payload) {
 function performRound1Elimination(reason = 'wrong') {
   if (round1IsSpectator || !player || !isRoundParticipant(round1State, playerId)) return;
   round1IsSpectator = true;
+  syncRound1InputMode();
   round1WaitingNotice?.classList.remove('hidden');
   setRound1Status(reason === 'movement' ? 'Вы двигались во время проверки и выбыли.' : 'Ответ или позиция неверны. Вы выбыли.', 'red');
   currentSpeed = 0;
@@ -6638,6 +6680,17 @@ function setupEvents() {
     if (restaurantOpen || mafiaOpen || mafiaInGame || cinemaOpen || cinemaInRoom) return false;
     const cr = document.getElementById('cinema-room');
     if (cr && !cr.classList.contains('hidden')) return false;
+    if (document.body.classList.contains('round1-mode')) {
+      const activeRoundPlayer = Boolean(
+        round1State &&
+        isRoundParticipant(round1State, playerId) &&
+        round1State.activeIds?.includes(String(playerId)) &&
+        !round1IsSpectator &&
+        round1State.phase !== 'countdown' &&
+        round1State.phase !== 'finished'
+      );
+      if (!activeRoundPlayer) return false;
+    }
     return true;
   }
 

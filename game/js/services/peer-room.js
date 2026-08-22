@@ -1,29 +1,52 @@
-const PEERJS_CDN = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';
+const PEERJS_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js',
+  'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js'
+];
+const PEER_ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+  ],
+  iceCandidatePoolSize: 4
+};
+const peerOptions = () => ({ debug: 0, config: PEER_ICE_CONFIG });
 let peerJsPromise = null;
 
 function loadPeerJs() {
   if (globalThis.Peer) return Promise.resolve(globalThis.Peer);
   if (peerJsPromise) return peerJsPromise;
-  peerJsPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-life-peerjs="1"]');
-    if (existing) {
-      const started = Date.now();
-      const poll = () => {
-        if (globalThis.Peer) return resolve(globalThis.Peer);
-        if (Date.now() - started > 12000) return reject(new Error('PEERJS_LOAD_TIMEOUT'));
-        setTimeout(poll, 60);
-      };
-      poll();
-      return;
+  peerJsPromise = (async () => {
+    let lastError = null;
+    for (const source of PEERJS_SOURCES) {
+      try {
+        await new Promise((resolve, reject) => {
+          const old = document.querySelector('script[data-life-peerjs="1"]');
+          if (old) old.remove();
+          const script = document.createElement('script');
+          script.src = source;
+          script.async = true;
+          script.crossOrigin = 'anonymous';
+          script.dataset.lifePeerjs = '1';
+          const timeout = setTimeout(() => reject(new Error('PEERJS_LOAD_TIMEOUT')), 18000);
+          script.onload = () => {
+            clearTimeout(timeout);
+            globalThis.Peer ? resolve(true) : reject(new Error('PEERJS_GLOBAL_MISSING'));
+          };
+          script.onerror = () => {
+            clearTimeout(timeout);
+            reject(new Error('PEERJS_LOAD_FAILED'));
+          };
+          document.head.appendChild(script);
+        });
+        if (globalThis.Peer) return globalThis.Peer;
+      } catch (error) {
+        lastError = error;
+      }
     }
-    const script = document.createElement('script');
-    script.src = PEERJS_CDN;
-    script.async = true;
-    script.dataset.lifePeerjs = '1';
-    script.onload = () => globalThis.Peer ? resolve(globalThis.Peer) : reject(new Error('PEERJS_GLOBAL_MISSING'));
-    script.onerror = () => reject(new Error('PEERJS_LOAD_FAILED'));
-    document.head.appendChild(script);
-  });
+    peerJsPromise = null;
+    throw lastError || new Error('PEERJS_LOAD_FAILED');
+  })();
   return peerJsPromise;
 }
 
@@ -70,6 +93,10 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
   const membersMap = new Map([[selfId, localMeta]]);
   const hostConnections = new Map();
   const peerToPlayer = new Map();
+  const onlineHandler = () => { if (!closed && !peer?.open) scheduleReconnect(); };
+  const visibilityHandler = () => { if (!closed && document.visibilityState === 'visible' && !peer?.open) scheduleReconnect(); };
+  globalThis.addEventListener?.('online', onlineHandler);
+  document.addEventListener?.('visibilitychange', visibilityHandler);
 
   const emitPresence = () => onPresence?.(cloneMembers(membersMap));
   const cleanTimer = () => {
@@ -153,7 +180,7 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
       membersMap.clear();
       membersMap.set(selfId, localMeta);
       startElection().catch(() => { if (!closed) scheduleReconnect(); });
-    }, 500 + Math.floor(Math.random() * 900));
+    }, 900 + Math.floor(Math.random() * 1600));
   };
 
   const becomeHost = () => {
@@ -167,13 +194,13 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
 
   const becomeClient = () => new Promise((resolve, reject) => {
     isHost = false;
-    peer = new PeerCtor(undefined, { debug: 0 });
+    peer = new PeerCtor(undefined, peerOptions());
     let settled = false;
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
       reject(new Error('PEER_CLIENT_TIMEOUT'));
-    }, 12000);
+    }, 20000);
     peer.on('open', () => {
       if (closed) return;
       hostConn = peer.connect(roomKey, { reliable: true, serialization: 'json' });
@@ -226,14 +253,14 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
     PeerCtor = PeerCtor || await loadPeerJs();
     onStatus?.('CONNECTING');
     return new Promise((resolve, reject) => {
-      peer = new PeerCtor(roomKey, { debug: 0 });
+      peer = new PeerCtor(roomKey, peerOptions());
       let settled = false;
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
         try { peer.destroy(); } catch {}
         reject(new Error('PEER_HOST_TIMEOUT'));
-      }, 9000);
+      }, 18000);
       peer.on('open', () => {
         if (settled || closed) return;
         settled = true;
@@ -298,6 +325,8 @@ export function createPeerFallbackRoom({ topic, playerId, displayName, presence 
     closed = true;
     cleanTimer();
     onStatus?.('CLOSED');
+    globalThis.removeEventListener?.('online', onlineHandler);
+    document.removeEventListener?.('visibilitychange', visibilityHandler);
     destroyPeer();
     membersMap.clear();
   }

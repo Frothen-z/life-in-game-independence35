@@ -2179,3 +2179,10 @@ body.round1-mode #btn-social{display:none!important}
 @media(max-width:700px){.round1-hud{top:8px;padding:11px 12px 12px;border-radius:14px}.round1-question{font-size:16px}.round1-status{font-size:12px}}
 
 .round1-start.joined{background:linear-gradient(135deg,#475569,#334155);box-shadow:none}
+body.round1-mode:not(.round1-playing),
+body.round1-mode:not(.round1-playing) #c { cursor: default !important; }
+body.round1-mode.round1-playing #c { cursor: none !important; }
+body.round1-mode:not(.round1-playing) .mobile-controls { pointer-events: none !important; opacity: .18; }
+.round1-start { pointer-events: auto !important; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.round1-hud { cursor: default; }
+
