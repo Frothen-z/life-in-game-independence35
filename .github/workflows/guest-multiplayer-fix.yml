@@ -1,0 +1,230 @@
+name: Fix guest multiplayer
+on:
+  pull_request:
+    branches: [main]
+    paths: ['guest-multiplayer-trigger.txt']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply guest multiplayer repair
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          main = Path('game/js/main.js')
+          text = main.read_text(encoding='utf-8')
+
+          text = text.replace(
+              "let playerId = null;\n",
+              "let playerId = null;\nlet guestConnectionId = null;\n",
+              1
+          )
+
+          pattern = r"function ensurePlayerId\(\) \{.*?\n\}\n\nfunction getProfileData"
+          replacement = r'''function ensurePlayerId() {
+            if (!currentUser) return null;
+            if (cloudSession?.user?.id && !currentUser?.isGuest) {
+              playerId = String(cloudSession.user.id);
+              return playerId;
+            }
+            if (!guestConnectionId) {
+              let token = '';
+              try { token = globalThis.crypto?.randomUUID?.() || ''; } catch {}
+              if (!token) token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+              guestConnectionId = `g_${String(token).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+            }
+            playerId = guestConnectionId;
+            try { localStorage.removeItem('ce_pid'); } catch {}
+            return playerId;
+          }
+
+          function getProfileData'''
+          text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          assert count == 1, 'ensurePlayerId replacement failed'
+
+          legacy_id_block = """    if (!playerId) {
+              try { playerId = localStorage.getItem('ce_pid') || ('p_' + Math.random().toString(36).slice(2, 10)); localStorage.setItem('ce_pid', playerId); }
+              catch { playerId = 'p_' + Math.random().toString(36).slice(2, 10); }
+            }
+          """
+          if legacy_id_block in text:
+              text = text.replace(legacy_id_block, "    ensurePlayerId();\n", 1)
+          else:
+              text, count = re.subn(
+                  r"\s*if \(!playerId\) \{\s*try \{ playerId = localStorage\.getItem\('ce_pid'\).*?\n\s*\}\n",
+                  "\n    ensurePlayerId();\n",
+                  text,
+                  count=1,
+                  flags=re.S
+              )
+              assert count == 1, 'legacy ce_pid block replacement failed'
+
+          old_connect = """  if (hasCloudAccount()) {
+              try {
+                await connectSupabaseMultiplayer(roomId);
+                showToast('Сетевой режим готов · запишитесь на Раунд 1');
+                return;
+              } catch (e) {
+                console.error('Supabase realtime failed', e);
+                round1RealtimeReady = false;
+                updateRound1LobbyUI();
+                showToast('Не удалось подключиться к сетевой комнате');
+                if (onlineEl) onlineEl.textContent = 'Сеть недоступна';
+                return;
+              }
+            }
+          """
+          new_connect = """  if (supabaseClient) {
+              try {
+                await connectSupabaseMultiplayer(roomId);
+                showToast(currentUser?.isGuest
+                  ? 'Гостевой сетевой режим готов · запишитесь на Раунд 1'
+                  : 'Сетевой режим готов · запишитесь на Раунд 1');
+                return;
+              } catch (e) {
+                console.error('Supabase realtime failed', e);
+                round1RealtimeReady = false;
+                updateRound1LobbyUI();
+                showToast('Не удалось подключиться к сетевой комнате');
+                if (onlineEl) onlineEl.textContent = 'Сеть недоступна';
+                return;
+              }
+            }
+          """
+          assert old_connect in text, 'online connect block not found'
+          text = text.replace(old_connect, new_connect, 1)
+
+          text = text.replace(
+              "  showToast('Для сетевой игры войдите в аккаунт');\n  if (onlineEl) onlineEl.textContent = 'Гость · только вы';",
+              "  showToast('Сетевой режим недоступен: не получены настройки Supabase');\n  if (onlineEl) onlineEl.textContent = 'Сеть не настроена';",
+              1
+          )
+
+          needle = """    displayName: currentUser?.name,
+              presence: {
+                feature: ROUND1_ROOM_KEY,
+          """
+          replacement = """    displayName: currentUser?.name,
+              privateChannel: false,
+              presence: {
+                feature: ROUND1_ROOM_KEY,
+          """
+          assert needle in text, 'round1 realtime call not found'
+          text = text.replace(needle, replacement, 1)
+
+          status_anchor = """    onPresence: handleRound1Presence
+            });
+          """
+          status_replacement = """    onPresence: handleRound1Presence,
+              onStatus: (status) => {
+                if (status === 'SUBSCRIBED') {
+                  round1RealtimeReady = true;
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                  round1RealtimeReady = false;
+                }
+                updateRound1LobbyUI();
+              }
+            });
+          """
+          assert status_anchor in text, 'round1 status hook anchor not found'
+          text = text.replace(status_anchor, status_replacement, 1)
+
+          text = text.replace(
+              "showToast(hasCloudAccount() ? 'Сетевая комната ещё не подключена' : 'Войдите в аккаунт для участия');",
+              "showToast('Сетевая комната ещё не подключена. Подождите несколько секунд или обновите страницу.');"
+          )
+          text = text.replace(
+              "round1Status.textContent = hasCloudAccount() ? 'Подключение к сетевой комнате…' : 'Войдите в аккаунт, чтобы участвовать в сетевом матче.';",
+              "round1Status.textContent = supabaseClient ? 'Подключение к сетевой комнате…' : 'Сетевой режим не настроен. Проверьте Supabase runtime config.';"
+          )
+
+          text = text.replace(
+              "  round1RealtimeReady = false;\n  round1Joined = false;\n  resetLocalRound1Flags();",
+              "  round1RealtimeReady = false;\n  round1Joined = false;\n  round1State = null;\n  round1LastPhaseKey = '';\n  resetLocalRound1Flags();",
+              1
+          )
+
+          text = text.replace(
+              "    startRound1Match(fresh);",
+              "    startRound1Match(fresh.slice(0, ROUND1_MIN_PLAYERS));",
+              1
+          )
+
+          main.write_text(text, encoding='utf-8')
+
+          realtime = Path('game/js/services/realtime-room.js')
+          rt = realtime.read_text(encoding='utf-8')
+          rt = rt.replace(
+              "  presence = {},\n  onMessage,",
+              "  presence = {},\n  privateChannel = true,\n  onMessage,",
+              1
+          )
+          rt = rt.replace("          private: true,", "          private: Boolean(privateChannel),", 1)
+          realtime.write_text(rt, encoding='utf-8')
+
+          html = Path('game/index.html')
+          h = html.read_text(encoding='utf-8')
+          h = re.sub(r'css/style\.css\?v=[^\"\']+', 'css/style.css?v=round1-guest-2', h)
+          h = re.sub(r'js/main\.js\?v=[^\"\']+', 'js/main.js?v=round1-guest-2', h)
+          html.write_text(h, encoding='utf-8')
+
+      - name: Syntax and invariant checks
+        run: |
+          node --check game/js/main.js
+          node --check game/js/services/realtime-room.js
+          node --check game/js/round1-game.js
+          grep -q "privateChannel: false" game/js/main.js
+          grep -q "if (supabaseClient)" game/js/main.js
+          grep -q "guestConnectionId" game/js/main.js
+          ! grep -q "localStorage.getItem('ce_pid')" game/js/main.js
+          grep -q "private: Boolean(privateChannel)" game/js/services/realtime-room.js
+      - name: Round 1 unit checks
+        run: |
+          node --input-type=module <<'NODE'
+          import {
+            ROUND1_MIN_PLAYERS,
+            ROUND1_QUESTIONS,
+            checkpointFor,
+            evaluateCheckpoint,
+            registeredPlayerIds,
+            createRoundState,
+            isRoundParticipant
+          } from './game/js/round1-game.js';
+          if (ROUND1_MIN_PLAYERS !== 2) throw new Error('test player count changed');
+          const reg = registeredPlayerIds([
+            {id:'guestA', joined:true},
+            {id:'guestB', joined:true},
+            {id:'guestC', joined:false}
+          ]);
+          if (reg.length !== 2 || !reg.includes('guestA') || !reg.includes('guestB')) throw new Error('guest queue failed');
+          const state = createRoundState(reg, 1000, 77);
+          if (!isRoundParticipant(state, 'guestA') || isRoundParticipant(state, 'guestC')) throw new Error('participant isolation failed');
+          for (let i = 0; i < ROUND1_QUESTIONS.length; i++) {
+            const cp = checkpointFor(i, 77);
+            const zone = cp.zones.find(z => z.year === cp.correctYear);
+            const ok = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp});
+            if (!ok.pass) throw new Error(`checkpoint ${i} correct answer failed`);
+            const moved = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0.3,checkpoint:cp});
+            if (moved.pass || moved.reason !== 'movement') throw new Error(`checkpoint ${i} movement failed`);
+          }
+          console.log('Round 1 guest multiplayer logic OK');
+          NODE
+      - name: Commit repaired guest multiplayer
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/js/main.js game/js/services/realtime-room.js game/index.html
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Enable guest multiplayer for Round 1"
+          git push origin HEAD:main
