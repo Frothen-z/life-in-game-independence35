@@ -1,0 +1,41 @@
+name: Inspect live lifeingame.uz networking
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - live-inspect-trigger.txt
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch live networking files
+        run: |
+          set -e
+          echo '=== DNS ==='
+          getent ahosts lifeingame.uz | head -10 || true
+          echo '=== HEAD ==='
+          curl -IL --connect-timeout 10 --max-time 30 https://lifeingame.uz/ | head -30 || true
+          echo '=== SETTINGS ==='
+          curl -fsSL --connect-timeout 10 --max-time 30 https://lifeingame.uz/SETTINGS_HERE.js -o /tmp/settings.js
+          cat /tmp/settings.js
+          echo '\n=== GAME INDEX SCRIPTS ==='
+          curl -fsSL --connect-timeout 10 --max-time 30 https://lifeingame.uz/game/ -o /tmp/game.html
+          grep -Eo '<script[^>]+src="[^"]+"' /tmp/game.html | tail -10 || true
+          echo '\n=== CONFIG ==='
+          curl -fsSL --connect-timeout 10 --max-time 30 https://lifeingame.uz/game/js/config.js | sed -n '1,100p'
+          echo '\n=== REALTIME ROOM ==='
+          curl -fsSL --connect-timeout 10 --max-time 30 https://lifeingame.uz/game/js/services/realtime-room.js | sed -n '1,220p'
+          echo '\n=== MAIN NETWORK MARKERS ==='
+          curl -fsSL --connect-timeout 10 --max-time 30 https://lifeingame.uz/game/js/main.js -o /tmp/main.js
+          grep -nE 'initMultiplayer|createRealtimeRoom|pushPresence|pullPresence|presence|isGuest|cloudEnabled' /tmp/main.js | head -120 || true
+          echo '\n=== PARSED PUBLIC CONFIG ==='
+          node <<'NODE'
+          const fs=require('fs'),vm=require('vm');
+          const text=fs.readFileSync('/tmp/settings.js','utf8');
+          const ctx={window:{}};
+          vm.createContext(ctx);
+          vm.runInContext(text,ctx);
+          const cfg=ctx.window.LIFE_IN_GAME_CONFIG||{};
+          console.log(JSON.stringify({supabaseUrl:cfg.supabaseUrl||'',supabaseAnonKey:cfg.supabaseAnonKey||'',avaturnSubdomain:cfg.avaturnSubdomain||''},null,2));
+          NODE
