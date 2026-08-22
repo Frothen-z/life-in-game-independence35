@@ -1,5 +1,7 @@
-export const ROUND1_MIN_PLAYERS = 2;
+export const ROUND1_REQUIRED_PLAYERS = 2;
+export const ROUND1_MIN_PLAYERS = ROUND1_REQUIRED_PLAYERS;
 export const ROUND1_MAX_PLAYERS = 8;
+export const ROUND1_COUNTDOWN_MS = 7000;
 export const ROUND1_CHECKPOINT_Z = Object.freeze([-8, 10, 28, 46, 64]);
 export const ROUND1_LANE_X = Object.freeze([-10, 0, 10]);
 export const ROUND1_ZONE_HALF_W = 3.4;
@@ -111,6 +113,29 @@ export function chooseHostId(ids) {
   return [...new Set((ids || []).map((id) => String(id || '')).filter(Boolean))].sort()[0] || null;
 }
 
+export function registeredPlayerIds(members) {
+  const ids = [];
+  const seen = new Set();
+  for (const member of members || []) {
+    const id = String(member?.id || member?.key || '').trim();
+    if (!id || !member?.joined || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids.slice(0, ROUND1_MAX_PLAYERS);
+}
+
+export function isRoundParticipant(state, playerId) {
+  const id = String(playerId || '');
+  if (!id || !state) return false;
+  const ids = state.participantIds || [
+    ...(state.activeIds || []),
+    ...(state.eliminatedIds || []),
+    ...(state.passedIds || [])
+  ];
+  return ids.map(String).includes(id);
+}
+
 export function createRoundState(playerIds, now = Date.now(), seed = null) {
   const players = [...new Set((playerIds || []).map(String).filter(Boolean))].slice(0, ROUND1_MAX_PLAYERS);
   if (players.length < 1) throw new Error('ROUND1_REQUIRES_PLAYER');
@@ -121,8 +146,9 @@ export function createRoundState(playerIds, now = Date.now(), seed = null) {
     seed: roundSeed,
     hostId: chooseHostId(players),
     phase: 'countdown',
-    phaseEndsAt: now + 5000,
+    phaseEndsAt: now + ROUND1_COUNTDOWN_MS,
     checkpointIndex: 0,
+    participantIds: [...players],
     activeIds: players,
     eliminatedIds: [],
     passedIds: [],

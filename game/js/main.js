@@ -18,6 +18,8 @@ import {
   checkpointFor,
   evaluateCheckpoint,
   chooseHostId,
+  registeredPlayerIds,
+  isRoundParticipant,
   createRoundState,
   applyReport,
   greenDurationMs
@@ -160,6 +162,11 @@ let round1WaitingNotice = null;
 let round1IsSpectator = false;
 let round1RoundFinished = false;
 let round1DebugBot = null;
+let round1Joined = false;
+let round1JoinBusy = false;
+let round1RealtimeReady = false;
+let round1AutoStartTimer = 0;
+let round1FinishedResetAt = 0;
 
 function hasCloudAccount() {
   return cloudEnabled && !!cloudSession?.user?.id && !currentUser?.isGuest;
@@ -795,6 +802,10 @@ async function initMultiplayer() {
     onlineEl.textContent = 'Онлайн: подключение…';
   }
 
+  round1RealtimeReady = false;
+  round1Joined = false;
+  resetLocalRound1Flags();
+
   if (hasCloudAccount()) {
     try { await pushProfileToCloud(); }
     catch (error) { console.warn('multiplayer profile sync', error); }
@@ -807,29 +818,107 @@ async function initMultiplayer() {
   if (hasCloudAccount()) {
     try {
       await connectSupabaseMultiplayer(roomId);
-      showToast('Город синхронизирован');
+      showToast('Сетевой режим готов · запишитесь на Раунд 1');
       return;
     } catch (e) {
       console.error('Supabase realtime failed', e);
-      showToast('Связь с городом потеряна · одиночный режим');
-      if (onlineEl) onlineEl.textContent = 'Офлайн · только вы';
+      round1RealtimeReady = false;
+      updateRound1LobbyUI();
+      showToast('Не удалось подключиться к сетевой комнате');
+      if (onlineEl) onlineEl.textContent = 'Сеть недоступна';
       return;
     }
   }
 
-  // Guest mode remains solo in production. ?round1test=1 enables a local
-  // two-player simulation only for development/browser smoke tests.
   if (new URLSearchParams(location.search).get('round1test') === '1') {
     setupRound1DebugMode();
     if (onlineEl) onlineEl.textContent = 'Тест: 2 игрока';
-    showToast('Тестовый режим Раунда 1 · 2 игрока');
+    showToast('Тестовый режим Раунда 1 · нажмите «Записаться»');
     return;
   }
-  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок' }];
+
+  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];
   round1HostId = playerId;
+  round1RealtimeReady = false;
   updateRound1LobbyUI();
-  showToast('Гостевой режим · для сетевой игры войдите в аккаунт');
+  showToast('Для сетевой игры войдите в аккаунт');
   if (onlineEl) onlineEl.textContent = 'Гость · только вы';
+}
+
+function round1PresenceId(member) {
+  return String(member?.id || member?.key || '').trim();
+}
+
+function syncRound1RemotePresence(members) {
+  const ids = [...new Set((members || []).map(round1PresenceId).filter(Boolean))];
+  if (playerId && !ids.includes(String(playerId))) ids.push(String(playerId));
+  for (const member of members || []) {
+    const id = round1PresenceId(member);
+    if (!id || id === String(playerId)) continue;
+    let spawn = null;
+    const participating = round1State && isRoundParticipant(round1State, id);
+    if (participating) {
+      const participants = round1State.participantIds || round1State.activeIds || [];
+      spawn = round1SpawnForId(id, participants);
+      if (remotePlayers.has(id) && round1State.phase !== 'countdown') continue;
+    } else {
+      spawn = round1LobbySpawnForId(id, ids);
+    }
+    upsertRemotePlayer({
+      id,
+      name: member.name || 'Игрок',
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z,
+      rot: spawn.yaw || 0,
+      moving: 0,
+      avatar: member.avatar || null
+    });
+  }
+}
+
+function handleRound1Presence(members) {
+  round1Members = members || [];
+  const onlineIds = round1MemberIds();
+  const onlineSet = new Set(onlineIds);
+  syncRound1RemotePresence(round1Members);
+
+  if (round1State) {
+    const participants = round1State.participantIds || round1State.activeIds || [];
+    const presentParticipants = participants.filter((id) => onlineSet.has(String(id)));
+    if (round1State.phase === 'countdown' && presentParticipants.length < participants.length) {
+      const replacementHost = chooseHostId(presentParticipants);
+      round1HostId = replacementHost;
+      if (replacementHost === String(playerId)) {
+        resetRound1ToLobby({ broadcast: true, message: 'Один из участников вышел. Набор открыт снова.' });
+      }
+    } else if (!onlineSet.has(String(round1State.hostId || ''))) {
+      const replacementHost = chooseHostId((round1State.activeIds || participants).filter((id) => onlineSet.has(String(id))));
+      round1HostId = replacementHost;
+      if (replacementHost === String(playerId)) {
+        const next = { ...round1State, hostId: replacementHost, revision: Number(round1State.revision || 0) + 1 };
+        setRound1State(next, { force: true });
+        broadcastRound1State();
+      }
+    } else {
+      round1HostId = round1State.hostId;
+    }
+  } else {
+    const queued = round1RegisteredIds();
+    round1HostId = chooseHostId(queued) || chooseHostId(onlineIds);
+  }
+
+  for (const [id, entry] of remotePlayers) {
+    if (!onlineSet.has(id) && id !== round1DebugBot?.id) {
+      scene?.remove(entry.group);
+      remotePlayers.delete(id);
+    }
+  }
+
+  const el = document.getElementById('players-online');
+  if (el) el.textContent = `Онлайн: ${Math.max(1, onlineIds.length)}`;
+  updateRound1LobbyUI();
+  maybeAutoStartRound1();
 }
 
 async function connectSupabaseMultiplayer(roomId) {
@@ -838,44 +927,38 @@ async function connectSupabaseMultiplayer(roomId) {
     topic: `${ROUND1_ROOM_KEY}:${roomId}`,
     playerId,
     displayName: currentUser?.name,
-    presence: { feature: ROUND1_ROOM_KEY },
+    presence: {
+      feature: ROUND1_ROOM_KEY,
+      joined: false,
+      avatar: customAvatarUrl || currentUser?.avatarUrl || null
+    },
     onMessage: (payload) => {
-      if (!payload || Date.now() - (payload.t || 0) > 12000) return;
+      if (!payload || Date.now() - (payload.t || 0) > 15000) return;
       if (handleRound1Message(payload)) return;
       upsertRemotePlayer(payload);
       const entry = remotePlayers.get(payload.id);
       if (entry) entry.lastSeen = Date.now();
     },
-    onPresence: (members) => {
-      round1Members = members;
-      round1HostId = chooseHostId(members.map((member) => String(member.id || member.key)));
-      updateRound1LobbyUI();
-      if (round1HostId === playerId && round1State) broadcastRound1State();
-      const active = new Set(members.map((member) => String(member.id || member.key)));
-      for (const [id, entry] of remotePlayers) {
-        if (!active.has(id)) {
-          scene?.remove(entry.group);
-          remotePlayers.delete(id);
-        }
-      }
-      const el = document.getElementById('players-online');
-      if (el) el.textContent = `Онлайн: ${Math.max(1, members.length)}`;
-    }
+    onPresence: handleRound1Presence
   });
   await cityRoom.connect();
-  round1Members = cityRoom.members();
-  round1HostId = chooseHostId(round1Members.map((member) => String(member.id || member.key)));
-  updateRound1LobbyUI();
   p2pSend = (payload) => {
     cityRoom.send({ ...payload, id: playerId }).catch((error) => {
       console.warn('city realtime send', error);
     });
   };
+  round1RealtimeReady = true;
+  round1Joined = false;
+  await cityRoom.track({
+    feature: ROUND1_ROOM_KEY,
+    joined: false,
+    avatar: customAvatarUrl || currentUser?.avatarUrl || null
+  });
+  handleRound1Presence(cityRoom.members());
   lifecycle.interval(() => broadcastPose(false), 250);
   lifecycle.interval(() => pruneRemotePlayers(), 2000);
   broadcastPose(true);
 }
-
 
 function setupRound1UI() {
   document.body.classList.add('round1-mode');
@@ -885,19 +968,99 @@ function setupRound1UI() {
   round1Counter = document.getElementById('round1-counter');
   round1StartButton = document.getElementById('round1-start');
   round1WaitingNotice = document.getElementById('round1-waiting');
+  round1WaitingNotice?.classList.add('hidden');
   round1Hud?.classList.remove('hidden');
-  round1StartButton?.addEventListener('click', () => {
-    if (round1HostId !== playerId) return;
-    startRound1Match();
-  });
+  if (round1StartButton && !round1StartButton.dataset.round1Bound) {
+    round1StartButton.dataset.round1Bound = '1';
+    round1StartButton.addEventListener('click', () => setRound1Registration(!round1Joined));
+  }
   updateRound1LobbyUI();
 }
 
 function round1MemberIds() {
-  const ids = (round1Members || []).map((member) => String(member?.id || member?.key || '')).filter(Boolean);
+  const ids = (round1Members || []).map(round1PresenceId).filter(Boolean);
   if (playerId && !ids.includes(String(playerId))) ids.push(String(playerId));
   if (round1DebugBot?.id && !ids.includes(round1DebugBot.id)) ids.push(round1DebugBot.id);
   return [...new Set(ids)].slice(0, ROUND1_MAX_PLAYERS);
+}
+
+function round1RegisteredIds() {
+  const ids = registeredPlayerIds(round1Members || []);
+  if (round1Joined && playerId && !ids.includes(String(playerId))) ids.push(String(playerId));
+  if (round1DebugBot?.joined && !ids.includes(round1DebugBot.id)) ids.push(round1DebugBot.id);
+  return [...new Set(ids)].slice(0, ROUND1_MAX_PLAYERS);
+}
+
+function updateLocalPresenceCache(joined) {
+  const id = String(playerId || '');
+  let found = false;
+  round1Members = (round1Members || []).map((member) => {
+    if (round1PresenceId(member) !== id) return member;
+    found = true;
+    return { ...member, id, key: member.key || id, joined: Boolean(joined), avatar: customAvatarUrl || currentUser?.avatarUrl || null };
+  });
+  if (!found && id) {
+    round1Members.push({ id, key: id, name: currentUser?.name || 'Игрок', joined: Boolean(joined), avatar: customAvatarUrl || currentUser?.avatarUrl || null });
+  }
+}
+
+async function setRound1Registration(joined) {
+  if (round1JoinBusy || round1State) return;
+  if (!round1RealtimeReady && !round1DebugBot) {
+    showToast(hasCloudAccount() ? 'Сетевая комната ещё не подключена' : 'Войдите в аккаунт для участия');
+    return;
+  }
+  round1JoinBusy = true;
+  round1Joined = Boolean(joined);
+  updateLocalPresenceCache(round1Joined);
+  if (round1Joined) {
+    resetLocalRound1Flags();
+    if (player) player.visible = true;
+  }
+  updateRound1LobbyUI();
+  try {
+    if (cityRoom) {
+      await cityRoom.track({
+        feature: ROUND1_ROOM_KEY,
+        joined: round1Joined,
+        avatar: customAvatarUrl || currentUser?.avatarUrl || null
+      });
+      round1Members = cityRoom.members();
+    }
+    showToast(round1Joined ? 'Вы записаны на Раунд 1' : 'Запись отменена');
+  } catch (error) {
+    console.warn('round1 registration', error);
+    round1Joined = !round1Joined;
+    updateLocalPresenceCache(round1Joined);
+    showToast('Не удалось изменить запись. Попробуйте ещё раз.');
+  } finally {
+    round1JoinBusy = false;
+    updateRound1LobbyUI();
+    maybeAutoStartRound1();
+  }
+}
+
+function maybeAutoStartRound1() {
+  if (round1State || !round1RealtimeReady) return;
+  const queued = round1RegisteredIds();
+  if (queued.length < ROUND1_MIN_PLAYERS) {
+    if (round1AutoStartTimer) window.clearTimeout(round1AutoStartTimer);
+    round1AutoStartTimer = 0;
+    return;
+  }
+  const host = chooseHostId(queued);
+  round1HostId = host;
+  if (host !== String(playerId) || round1AutoStartTimer) return;
+  round1AutoStartTimer = window.setTimeout(() => {
+    round1AutoStartTimer = 0;
+    if (round1State) return;
+    const fresh = round1RegisteredIds();
+    if (fresh.length < ROUND1_MIN_PLAYERS) {
+      updateRound1LobbyUI();
+      return;
+    }
+    startRound1Match(fresh);
+  }, 650);
 }
 
 function round1LobbySpawnForId(id, ids = round1MemberIds()) {
@@ -918,6 +1081,7 @@ function placeLocalOnLobbySlot() {
     yaw = spawn.yaw;
     player.rotation.y = yaw;
     currentSpeed = 0;
+    velocityY = 0;
     moveTarget = null;
     lastPoseX = player.position.x;
     lastPoseZ = player.position.z;
@@ -926,49 +1090,68 @@ function placeLocalOnLobbySlot() {
 }
 
 function updateRound1LobbyUI() {
-  if (!round1Hud || round1State?.phase && round1State.phase !== 'finished') return;
+  if (!round1Hud) return;
   round1Hud.classList.remove('hidden');
-  const ids = round1MemberIds();
-  const count = ids.length;
-  const host = round1HostId || chooseHostId(ids);
+  if (round1State) {
+    round1StartButton?.classList.add('hidden');
+    refreshRound1Visuals();
+    return;
+  }
+
+  resetLocalRound1Flags();
+  if (player) player.visible = true;
+  const online = round1MemberIds();
+  const queued = round1RegisteredIds();
   placeLocalOnLobbySlot();
-  if (round1Question) round1Question.textContent = 'Раунд 1: исторические даты';
-  if (round1Counter) round1Counter.textContent = `${count} / ${ROUND1_MAX_PLAYERS} игроков`;
+  if (round1Question) round1Question.textContent = 'Запись на Раунд 1';
+  if (round1Counter) round1Counter.textContent = `Записано: ${queued.length} / ${ROUND1_MIN_PLAYERS} · онлайн ${online.length}`;
   if (round1Status) {
     round1Status.className = 'round1-status';
-    round1Status.textContent = count >= ROUND1_MIN_PLAYERS
-      ? (host === playerId ? 'Игроки готовы. Вы можете запустить тестовый матч.' : 'Ожидание запуска матча ведущим игроком.')
-      : `Нужно минимум ${ROUND1_MIN_PLAYERS} игрока. Сейчас в сети: ${count}.`;
+    if (!round1RealtimeReady && !round1DebugBot) {
+      round1Status.textContent = hasCloudAccount() ? 'Подключение к сетевой комнате…' : 'Войдите в аккаунт, чтобы участвовать в сетевом матче.';
+    } else if (!round1Joined) {
+      round1Status.textContent = `Нажмите «Записаться на участие». Игра стартует автоматически после набора ${ROUND1_MIN_PLAYERS} игроков.`;
+    } else if (queued.length < ROUND1_MIN_PLAYERS) {
+      round1Status.textContent = `Вы записаны. Ожидаем ещё ${ROUND1_MIN_PLAYERS - queued.length} игрока.`;
+    } else {
+      round1Status.textContent = 'Набор завершён. Готовим общий отсчёт…';
+      round1Status.classList.add('gold');
+    }
   }
   if (round1StartButton) {
-    const isHost = host === playerId;
-    round1StartButton.classList.toggle('hidden', !isHost);
-    round1StartButton.disabled = count < ROUND1_MIN_PLAYERS;
-    round1StartButton.textContent = count < ROUND1_MIN_PLAYERS ? `Ожидание второго игрока (${count}/2)` : 'Начать Раунд 1';
+    round1StartButton.classList.remove('hidden');
+    round1StartButton.classList.toggle('joined', round1Joined);
+    round1StartButton.disabled = round1JoinBusy || (!round1RealtimeReady && !round1DebugBot);
+    round1StartButton.textContent = round1JoinBusy
+      ? 'Синхронизация…'
+      : (round1Joined ? 'Отменить запись' : 'Записаться на участие');
   }
+  maybeAutoStartRound1();
 }
 
 function setupRound1DebugMode() {
-  round1DebugBot = { id: 'round1_debug_bot', name: 'Тестовый игрок' };
+  round1DebugBot = { id: 'round1_debug_bot', name: 'Тестовый игрок', joined: true };
   round1Members = [
-    { id: playerId, key: playerId, name: currentUser?.name || 'Игрок' },
-    { id: round1DebugBot.id, key: round1DebugBot.id, name: round1DebugBot.name }
+    { id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false },
+    { id: round1DebugBot.id, key: round1DebugBot.id, name: round1DebugBot.name, joined: true }
   ];
+  round1RealtimeReady = true;
   round1HostId = playerId;
+  const botSpawn = round1LobbySpawnForId(round1DebugBot.id, round1MemberIds());
   upsertRemotePlayer({
     id: round1DebugBot.id,
     name: round1DebugBot.name,
-    x: 2.8,
-    y: 0.22,
-    z: -48,
-    rot: 0,
+    x: botSpawn.x,
+    y: botSpawn.y,
+    z: botSpawn.z,
+    rot: botSpawn.yaw,
     moving: 0,
     avatar: null
   });
   updateRound1LobbyUI();
 }
 
-function round1SpawnForId(id, ids = round1MemberIds()) {
+function round1SpawnForId(id, ids = round1RegisteredIds()) {
   const order = [...ids].sort();
   const index = Math.max(0, order.indexOf(String(id)));
   const count = Math.max(1, order.length);
@@ -988,8 +1171,9 @@ function resetLocalRound1Flags() {
 }
 
 function teleportLocalToRound1Start(state) {
-  if (!player || !state?.activeIds?.includes(String(playerId))) return;
-  const spawn = round1SpawnForId(playerId, state.activeIds);
+  if (!player || !isRoundParticipant(state, playerId)) return;
+  const participants = state.participantIds || state.activeIds || [];
+  const spawn = round1SpawnForId(playerId, participants);
   player.visible = true;
   player.position.set(spawn.x, spawn.y, spawn.z);
   yaw = spawn.yaw;
@@ -1001,6 +1185,52 @@ function teleportLocalToRound1Start(state) {
   lastPoseX = player.position.x;
   lastPoseZ = player.position.z;
   broadcastPose(true);
+}
+
+function prepareRemotePlayersForRound(state) {
+  const participants = state?.participantIds || state?.activeIds || [];
+  for (const idValue of participants) {
+    const id = String(idValue);
+    if (!id || id === String(playerId)) continue;
+    const member = (round1Members || []).find((value) => round1PresenceId(value) === id);
+    const spawn = round1SpawnForId(id, participants);
+    upsertRemotePlayer({
+      id,
+      name: member?.name || remotePlayers.get(id)?.name || 'Игрок',
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z,
+      rot: spawn.yaw,
+      moving: 0,
+      avatar: member?.avatar || null
+    });
+    const entry = remotePlayers.get(id);
+    if (entry) {
+      entry.group.position.set(spawn.x, spawn.y, spawn.z);
+      entry.target.set(spawn.x, spawn.y, spawn.z);
+      entry.group.visible = true;
+    }
+  }
+}
+
+function resetRound1ToLobby({ broadcast = false, message = '' } = {}) {
+  if (round1AutoStartTimer) window.clearTimeout(round1AutoStartTimer);
+  round1AutoStartTimer = 0;
+  round1FinishedResetAt = 0;
+  round1HostTimer = 0;
+  round1State = null;
+  round1Joined = false;
+  resetLocalRound1Flags();
+  if (player) player.visible = true;
+  updateLocalPresenceCache(false);
+  if (cityRoom) {
+    cityRoom.track({ feature: ROUND1_ROOM_KEY, joined: false, avatar: customAvatarUrl || currentUser?.avatarUrl || null }).catch(() => {});
+  }
+  if (broadcast && p2pSend) p2pSend({ type: 'round1_reset', reason: message || 'reset' });
+  placeLocalOnLobbySlot();
+  syncRound1RemotePresence(round1Members);
+  updateRound1LobbyUI();
+  if (message) showToast(message);
 }
 
 function configureRound1Answers(seed) {
@@ -1033,6 +1263,15 @@ function refreshRound1Visuals(now = Date.now()) {
   const phase = round1State.phase;
   const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
   const total = ROUND1_QUESTIONS.length;
+  const localParticipant = isRoundParticipant(round1State, playerId);
+  if (!localParticipant && phase !== 'finished') {
+    round1WaitingNotice?.classList.add('hidden');
+    if (round1Counter) round1Counter.textContent = `Участников: ${(round1State.participantIds || []).length}`;
+    if (round1Question) round1Question.textContent = 'Матч уже идёт';
+    setRound1Status('Вы не участвуете в текущем матче. Дождитесь следующего набора.', 'gold');
+    setRound1QuestionBoard('РАУНД 1 ИДЁТ', 'ожидайте следующего набора');
+    return;
+  }
   if (round1Counter) round1Counter.textContent = `${Math.min(total, round1State.checkpointIndex + 1)} / ${total}`;
   if (round1Question) round1Question.textContent = phase === 'finished' ? 'Раунд завершён' : checkpoint.question;
 
@@ -1072,59 +1311,63 @@ function refreshRound1Visuals(now = Date.now()) {
     setRound1Status('СТОП! Не двигайтесь. Сейчас проверяется ваша позиция.', 'red');
     setRound1QuestionBoard('СТОП', 'замрите на выбранной дате');
   } else if (phase === 'finished') {
-    if (round1State.passedIds?.includes(String(playerId))) {
+    const localParticipant = isRoundParticipant(round1State, playerId);
+    if (localParticipant && round1State.passedIds?.includes(String(playerId))) {
       setRound1Status('Вы успешно прошли Раунд 1.', 'green');
       if (round1Question) round1Question.textContent = 'РАУНД ПРОЙДЕН';
-    } else if (round1IsSpectator || round1State.eliminatedIds?.includes(String(playerId))) {
-      setRound1Status('Вы выбыли. Ожидайте завершения матча в зале ожидания.', 'red');
+    } else if (localParticipant && (round1IsSpectator || round1State.eliminatedIds?.includes(String(playerId)))) {
+      setRound1Status('Вы выбыли. Скоро откроется новый набор.', 'red');
     } else {
-      setRound1Status('Раунд 1 завершён.', 'gold');
+      setRound1Status('Раунд 1 завершён. Скоро откроется новый набор.', 'gold');
     }
     setRound1QuestionBoard('РАУНД 1 ЗАВЕРШЁН', `${round1State.passedIds?.length || 0} игроков прошли дальше`);
-    if (round1StartButton && round1HostId === playerId && round1MemberIds().length >= ROUND1_MIN_PLAYERS) {
-      round1StartButton.classList.remove('hidden');
-      round1StartButton.disabled = false;
-      round1StartButton.textContent = 'Повторить Раунд 1';
-    }
+    round1StartButton?.classList.add('hidden');
   }
 }
 
-function startRound1Match() {
-  const ids = round1MemberIds();
-  if (round1HostId !== playerId) return;
+function startRound1Match(queuedIds = null) {
+  const ids = [...new Set((queuedIds || round1RegisteredIds()).map(String).filter(Boolean))].slice(0, ROUND1_MAX_PLAYERS);
+  const host = chooseHostId(ids);
+  if (host !== String(playerId)) return;
   if (ids.length < ROUND1_MIN_PLAYERS) {
-    showToast(`Нужно минимум ${ROUND1_MIN_PLAYERS} игрока`);
+    updateRound1LobbyUI();
     return;
   }
+  if (round1AutoStartTimer) window.clearTimeout(round1AutoStartTimer);
+  round1AutoStartTimer = 0;
   resetLocalRound1Flags();
   const state = createRoundState(ids, Date.now());
   state.hostId = playerId;
+  state.participantIds = [...ids];
   state.revision = 1;
   round1HostId = playerId;
+  round1FinishedResetAt = 0;
   setRound1State(state, { force: true, localStart: true });
   broadcastRound1State();
 }
 
 function setRound1State(incoming, options = {}) {
   if (!incoming || typeof incoming !== 'object') return;
+  if (!round1State && incoming.phase === 'finished' && !round1Joined && !options.force) return;
   const currentRevision = Number(round1State?.revision || 0);
   const incomingRevision = Number(incoming.revision || 0);
   if (!options.force && round1State?.roundId === incoming.roundId && incomingRevision < currentRevision) return;
   const previousRoundId = round1State?.roundId;
   round1State = JSON.parse(JSON.stringify(incoming));
+  if (!Array.isArray(round1State.participantIds)) {
+    round1State.participantIds = [...new Set([...(round1State.activeIds || []), ...(round1State.eliminatedIds || []), ...(round1State.passedIds || [])].map(String))];
+  }
   round1HostId = round1State.hostId || round1HostId;
+  const localParticipant = isRoundParticipant(round1State, playerId);
 
   if (previousRoundId !== round1State.roundId) {
     resetLocalRound1Flags();
     configureRound1Answers(round1State.seed);
-    if (round1State.activeIds?.includes(String(playerId))) teleportLocalToRound1Start(round1State);
-    if (round1DebugBot && round1State.activeIds?.includes(round1DebugBot.id)) {
-      const ent = remotePlayers.get(round1DebugBot.id);
-      const spawn = round1SpawnForId(round1DebugBot.id, round1State.activeIds);
-      if (ent) {
-        ent.group.position.set(spawn.x, spawn.y, spawn.z);
-        ent.target.set(spawn.x, spawn.y, spawn.z);
-      }
+    prepareRemotePlayersForRound(round1State);
+    if (localParticipant) teleportLocalToRound1Start(round1State);
+    else {
+      round1WaitingNotice?.classList.add('hidden');
+      if (player) player.visible = true;
     }
   }
 
@@ -1132,7 +1375,7 @@ function setRound1State(incoming, options = {}) {
   if (phaseKey !== round1LastPhaseKey) {
     round1LastPhaseKey = phaseKey;
     round1LocalReportKey = '';
-    if (round1State.phase === 'red' && player && round1State.activeIds?.includes(String(playerId))) {
+    if (round1State.phase === 'red' && localParticipant && player && round1State.activeIds?.includes(String(playerId))) {
       round1RedAnchor = player.position.clone();
       round1RedMaxMovement = 0;
       round1RedStartedAt = Date.now();
@@ -1143,8 +1386,11 @@ function setRound1State(incoming, options = {}) {
     }
   }
 
-  if (round1State.eliminatedIds?.includes(String(playerId)) && !round1IsSpectator) {
+  if (localParticipant && round1State.eliminatedIds?.includes(String(playerId)) && !round1IsSpectator) {
     performRound1Elimination('eliminated');
+  }
+  if (round1State.phase === 'finished' && round1HostId === String(playerId) && !round1FinishedResetAt) {
+    round1FinishedResetAt = Date.now() + 8000;
   }
   round1StartButton?.classList.add('hidden');
   refreshRound1Visuals();
@@ -1166,12 +1412,14 @@ function commitHostRound1State(nextState) {
 
 function handleRound1Message(payload) {
   if (!payload?.type || !String(payload.type).startsWith('round1_')) return false;
+  if (payload.type === 'round1_reset') {
+    resetRound1ToLobby({ broadcast: false, message: payload.reason && payload.reason !== 'reset' ? payload.reason : '' });
+    return true;
+  }
   if (payload.type === 'round1_state') {
     if (payload.state) {
       const incomingState = JSON.parse(JSON.stringify(payload.state));
-      // Realtime messages carry the sender timestamp. Translate host absolute
-      // deadlines to this browser's clock so clients do not need identical
-      // system clocks for green/red timing.
+      if (!round1State && incomingState.phase === 'finished' && !round1Joined) return true;
       const senderTime = Number(payload.t || 0);
       if (senderTime > 0 && String(payload.from || '') !== String(playerId)) {
         const clockShift = Date.now() - senderTime;
@@ -1180,10 +1428,6 @@ function handleRound1Message(payload) {
       }
       setRound1State(incomingState);
     }
-    return true;
-  }
-  if (payload.type === 'round1_start_request') {
-    if (round1HostId === playerId && !round1State) startRound1Match();
     return true;
   }
   if (payload.type === 'round1_report') {
@@ -1201,7 +1445,7 @@ function handleRound1Message(payload) {
 }
 
 function performRound1Elimination(reason = 'wrong') {
-  if (round1IsSpectator || !player) return;
+  if (round1IsSpectator || !player || !isRoundParticipant(round1State, playerId)) return;
   round1IsSpectator = true;
   round1WaitingNotice?.classList.remove('hidden');
   setRound1Status(reason === 'movement' ? 'Вы двигались во время проверки и выбыли.' : 'Ответ или позиция неверны. Вы выбыли.', 'red');
@@ -1223,7 +1467,7 @@ function performRound1Elimination(reason = 'wrong') {
 
 function sendLocalRound1Report(report) {
   const key = `${round1State?.roundId}:${round1State?.checkpointIndex}`;
-  if (!round1State || round1LocalReportKey === key) return;
+  if (!round1State || !isRoundParticipant(round1State, playerId) || round1LocalReportKey === key) return;
   round1LocalReportKey = key;
   if (!report.pass) performRound1Elimination(report.reason);
   const packet = {
@@ -1276,6 +1520,13 @@ function updateRound1Game() {
   const now = Date.now();
   refreshRound1Visuals(now);
 
+  if (round1State.phase === 'finished') {
+    if (round1HostId === String(playerId) && round1FinishedResetAt && now >= round1FinishedResetAt) {
+      resetRound1ToLobby({ broadcast: true });
+    }
+    return;
+  }
+
   if (round1State.phase === 'red' && round1State.activeIds?.includes(String(playerId)) && !round1IsSpectator) {
     if (round1RedAnchor) {
       const movement = Math.hypot(player.position.x - round1RedAnchor.x, player.position.z - round1RedAnchor.z);
@@ -1314,7 +1565,7 @@ function updateRound1Game() {
     const next = {
       ...round1State,
       phase: 'red',
-      phaseEndsAt: redCheckAt + 1300,
+      phaseEndsAt: redCheckAt + 2600,
       redCheckAt,
       reports: {},
       redActiveIds
@@ -1667,6 +1918,8 @@ function upsertRemotePlayer(row) {
     label.position.y = 2.15;
     group.add(label);
 
+    group.position.set(Number(row.x) || 0, Number(row.y) || 0, Number(row.z) || 0);
+    group.rotation.y = Number(row.rot) || 0;
     scene.add(group);
     entry = {
       group,
