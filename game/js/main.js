@@ -15,6 +15,7 @@ import { initSocialUI, disposeSocialUI } from './social.js';
 import {
   ROUND1_MIN_PLAYERS,
   ROUND1_MAX_PLAYERS,
+  ROUND1_COUNTDOWN_MS,
   ROUND1_QUESTIONS,
   checkpointFor,
   evaluateCheckpoint,
@@ -1412,11 +1413,17 @@ function refreshRound1Visuals(now = Date.now()) {
     if (round1Counter) round1Counter.textContent = `Участников: ${(round1State.participantIds || []).length}`;
     if (round1Question) round1Question.textContent = 'Матч уже идёт';
     setRound1Status('Вы не участвуете в текущем матче. Дождитесь следующего набора.', 'gold');
-    setRound1QuestionBoard('РАУНД 1 ИДЁТ', 'ожидайте следующего набора');
+    if (round1QuestionBoard) round1QuestionBoard.visible = false;
     return;
   }
   if (round1Counter) round1Counter.textContent = `${Math.min(total, round1State.checkpointIndex + 1)} / ${total}`;
-  if (round1Question) round1Question.textContent = phase === 'finished' ? 'Раунд завершён' : checkpoint.question;
+  if (round1QuestionBoard) round1QuestionBoard.visible = phase === 'countdown';
+  if (round1Question) {
+    if (phase === 'countdown') round1Question.textContent = checkpoint.question;
+    else if (phase === 'green') round1Question.textContent = 'Выберите правильную 3D-дату';
+    else if (phase === 'red') round1Question.textContent = 'СТОП — не двигайтесь';
+    else round1Question.textContent = 'Раунд завершён';
+  }
 
   round1DateGroups.forEach((entry) => {
     const current = entry.checkpointIndex === round1State.checkpointIndex && phase !== 'finished';
@@ -1445,14 +1452,12 @@ function refreshRound1Visuals(now = Date.now()) {
 
   if (phase === 'countdown') {
     const seconds = Math.max(0, Math.ceil((round1State.phaseEndsAt - now) / 1000));
-    setRound1Status(`Старт через ${seconds}… Приготовьтесь.`, 'gold');
-    setRound1QuestionBoard('ПРИГОТОВЬТЕСЬ', `старт через ${seconds}`);
+    setRound1Status(`Читайте вопрос · ${seconds} сек. После таймера вопрос исчезнет.`, 'gold');
+    setRound1QuestionBoard(`ВОПРОС ${round1State.checkpointIndex + 1} · ${seconds} СЕК`, checkpoint.question);
   } else if (phase === 'green') {
     setRound1Status('НАБЛЮДАТЕЛЬ ОТВЕРНУЛСЯ — двигайтесь к правильной 3D-дате.', 'green');
-    setRound1QuestionBoard(`ВОПРОС ${round1State.checkpointIndex + 1}`, checkpoint.question);
   } else if (phase === 'red') {
     setRound1Status('СТОП! Не двигайтесь. Сейчас проверяется ваша позиция.', 'red');
-    setRound1QuestionBoard('СТОП', 'замрите на выбранной дате');
   } else if (phase === 'finished') {
     const localParticipant = isRoundParticipant(round1State, playerId);
     if (localParticipant && round1State.passedIds?.includes(String(playerId))) {
@@ -1593,7 +1598,9 @@ function performRound1Elimination(reason = 'wrong') {
   round1IsSpectator = true;
   syncRound1InputMode();
   round1WaitingNotice?.classList.remove('hidden');
-  setRound1Status(reason === 'movement' ? 'Вы двигались во время проверки и выбыли.' : 'Ответ или позиция неверны. Вы выбыли.', 'red');
+  setRound1Status(reason === 'movement' ? 'Вы выбыли за движение. Теперь вы наблюдаете за матчем.' : 'Вы выбыли. Теперь вы наблюдаете за оставшимися игроками.', 'red');
+  cameraMode = 'follow';
+  freeCam = false;
   currentSpeed = 0;
   velocityY = 0;
   moveTarget = null;
@@ -1603,7 +1610,7 @@ function performRound1Elimination(reason = 'wrong') {
     player.position.set(ROUND1_WAITING.x, 0.32, ROUND1_WAITING.z);
     yaw = -Math.PI / 2;
     player.rotation.y = yaw;
-    player.visible = true;
+    player.visible = false;
     lastPoseX = player.position.x;
     lastPoseZ = player.position.z;
     broadcastPose(true);
@@ -1743,8 +1750,8 @@ function updateRound1Game() {
         next.winnerIds = [...next.activeIds];
       } else {
         next.checkpointIndex += 1;
-        next.phase = 'green';
-        next.phaseEndsAt = now + greenDurationMs(next.seed, next.checkpointIndex);
+        next.phase = 'countdown';
+        next.phaseEndsAt = now + ROUND1_COUNTDOWN_MS;
         next.reports = {};
         next.redActiveIds = null;
         next.redCheckAt = null;
@@ -6997,6 +7004,15 @@ function sampleGroundHeight(x, z) {
 function updatePlayer(dt) {
   if (!player) return;
 
+  if (round1IsSpectator && round1State) {
+    currentSpeed = 0;
+    velocityY = 0;
+    moveTarget = null;
+    keys.Space = false;
+    updateLocomotionPose(dt, 0);
+    return;
+  }
+
     let inputX =
     (keys.KeyD || keys.ArrowRight ? 1 : 0) +
     (keys.KeyA || keys.ArrowLeft ? -1 : 0);
@@ -7147,8 +7163,47 @@ function collides(pos) {
   return false;
 }
 
+function updateRound1SpectatorCamera(dt) {
+  if (!camera || !round1State) return;
+  const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
+  const activeIds = (round1State.activeIds || []).map(String);
+  let sumX = 0;
+  let sumZ = 0;
+  let count = 0;
+  for (const id of activeIds) {
+    if (id === String(playerId) && player && !round1IsSpectator) {
+      sumX += player.position.x;
+      sumZ += player.position.z;
+      count += 1;
+      continue;
+    }
+    const entry = remotePlayers.get(id);
+    if (!entry) continue;
+    const pos = entry.target || entry.group?.position;
+    if (!pos) continue;
+    sumX += Number(pos.x) || 0;
+    sumZ += Number(pos.z) || 0;
+    count += 1;
+  }
+  const playerFocusX = count ? sumX / count : 0;
+  const playerFocusZ = count ? sumZ / count : checkpoint.z;
+  const focusZ = THREE.MathUtils.clamp((playerFocusZ + checkpoint.z) * 0.5 + 7, -8, 66);
+  const focusX = THREE.MathUtils.clamp(playerFocusX * 0.45, -8, 8);
+  const desired = new THREE.Vector3(
+    24,
+    21,
+    THREE.MathUtils.clamp(focusZ - 34, -47, 34)
+  );
+  camera.position.lerp(desired, 1 - Math.pow(0.0025, dt));
+  camera.lookAt(focusX, 3.0, THREE.MathUtils.clamp(focusZ + 12, 4, 70));
+}
+
 function updateCamera(dt) {
   if (!player || !camera) return;
+  if (round1IsSpectator && round1State) {
+    updateRound1SpectatorCamera(dt);
+    return;
+  }
   if (cameraMode === 'diablo') {
     // Soft follow player unless user is free-panning the map
     if (!freeCam) {

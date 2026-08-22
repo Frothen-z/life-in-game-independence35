@@ -1,7 +1,7 @@
 export const ROUND1_REQUIRED_PLAYERS = 1;
 export const ROUND1_MIN_PLAYERS = ROUND1_REQUIRED_PLAYERS;
 export const ROUND1_MAX_PLAYERS = 8;
-export const ROUND1_COUNTDOWN_MS = 10000;
+export const ROUND1_COUNTDOWN_MS = 15000;
 export const ROUND1_CHECKPOINT_Z = Object.freeze([-8, 10, 28, 46, 64]);
 export const ROUND1_LANE_X = Object.freeze([-10, 0, 10]);
 export const ROUND1_ZONE_HALF_W = 3.4;

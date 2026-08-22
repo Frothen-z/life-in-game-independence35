@@ -2268,3 +2268,30 @@ body.round1-mode:not(.round1-playing) #mobile-controls { display: none !importan
   .auth-mode { font-size: 0.72rem; }
   .guest-access small { display: none; }
 }
+
+
+/* ROUND1_SPECTATOR_V11 */
+.round1-waiting:not(.hidden) {
+  left: 18px;
+  right: auto;
+  top: auto;
+  bottom: 18px;
+  transform: none;
+  width: min(360px, calc(100vw - 36px));
+  max-width: 360px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(8, 17, 31, 0.82);
+  backdrop-filter: blur(12px);
+  pointer-events: none;
+}
+.round1-waiting:not(.hidden) strong { font-size: 0.92rem; }
+.round1-waiting:not(.hidden) span { font-size: 0.76rem; line-height: 1.35; }
+@media (max-width: 720px) {
+  .round1-waiting:not(.hidden) {
+    left: 10px;
+    bottom: 10px;
+    width: min(320px, calc(100vw - 20px));
+    padding: 10px 12px;
+  }
+}
