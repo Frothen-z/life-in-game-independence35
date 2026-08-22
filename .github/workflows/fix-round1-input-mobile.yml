@@ -10,74 +10,65 @@ jobs:
   repair:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-      - name: Vendor PeerJS locally
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/peerjs-package
-          mkdir -p /tmp/peerjs-package game/vendor
-          TGZ=$(npm pack peerjs@1.5.5 --silent | tail -n 1)
-          tar -xzf "$TGZ" -C /tmp/peerjs-package
-          cp /tmp/peerjs-package/package/dist/peerjs.min.js game/vendor/peerjs.min.js
-          rm -f "$TGZ"
-          test -s game/vendor/peerjs.min.js
-      - name: Apply repair
-        run: |
-          python tools/fix_round1_input_mobile.py
-          python tools/fix_round1_cursor.py
-          python tools/fix_mobile_network_start.py
+      - name: Apply full Round 1 flow repair
+        run: python tools/fix_round1_flow_v10.py
       - name: Syntax and invariant checks
         run: |
           node --check game/js/main.js
-          node --check game/js/services/peer-room.js
           node --check game/js/round1-game.js
+          node --check game/js/services/auth-service.js
           python - <<'PY'
           from pathlib import Path
-          main=Path('game/js/main.js').read_text(encoding='utf-8')
-          peer=Path('game/js/services/peer-room.js').read_text(encoding='utf-8')
-          css=Path('game/css/style.css').read_text(encoding='utf-8')
           html=Path('game/index.html').read_text(encoding='utf-8')
-          settings=Path('SETTINGS_HERE.js').read_text(encoding='utf-8')
-          vendor=Path('game/vendor/peerjs.min.js')
-          assert vendor.exists() and vendor.stat().st_size > 50000
-          assert 'function syncRound1InputMode()' in main
-          assert 'attempt <= 6' in main and '${attempt}/6' in main
-          assert 'LOCAL_PEERJS' in peer and "../../vendor/peerjs.min.js" in peer
-          assert 'PEER_HOST_UNAVAILABLE' in peer
-          assert 'stun:stun.relay.metered.ca:80' in peer
-          assert 'iceCandidatePoolSize' not in peer
-          assert 'body.round1-mode:not(.round1-playing)' in css
-          assert 'body.round1-mode:not(.round1-playing) #mobile-controls { display: none !important; }' in css
-          canvas=css.split('#c {',1)[1].split('}',1)[0]
-          assert 'cursor: default;' in canvas and 'cursor: none;' not in canvas
-          assert 'iceServers: []' in settings
-          assert 'round1-mobile-9' in html
-          print('mobile network startup invariants ok')
+          css=Path('game/css/style.css').read_text(encoding='utf-8')
+          main=Path('game/js/main.js').read_text(encoding='utf-8')
+          auth=Path('game/js/services/auth-service.js').read_text(encoding='utf-8')
+          r1=Path('game/js/round1-game.js').read_text(encoding='utf-8')
+          assert 'id="reg-username"' not in html
+          assert 'name="gender"' not in html
+          assert 'id="reg-consent"' not in html
+          assert all(x in html for x in ['id="reg-name"','id="reg-email"','id="reg-pass"','id="round1-cancel"'])
+          assert 'round1-flow-10' in html
+          assert 'ROUND1_FLOW_V10' in css and '100dvh' in css
+          assert 'createInternalUsername' in auth and 'Такой логин уже занят' not in auth
+          assert 'round1GuestRealtimeClient' in main and 'persistSession: false' in main
+          assert 'round1JoinedAt' in main and 'Начать игру · ${queued.length}' in main
+          assert 'startRound1Match(fresh.slice' not in main
+          assert 'round1Doll.position.set(0, 0, 71.5)' in main
+          assert 'round1QuestionBoard.position.set(0, 14.2, 73.5)' in main
+          assert 'yaw: Math.PI, rot: 0' in main
+          assert 'ROUND1_COUNTDOWN_MS = 10000' in r1
+          print('Round 1 flow v10 invariants ok')
           PY
       - name: Round 1 logic checks
         run: |
           node --input-type=module <<'JS'
-          import { checkpointFor, evaluateCheckpoint, createRoundState, registeredPlayerIds, isRoundParticipant } from './game/js/round1-game.js';
-          const ids=registeredPlayerIds([{id:'desktop',joined:true},{id:'mobile',joined:true}]);
-          if(ids.length!==2) throw new Error('queue failed');
-          const state=createRoundState(ids,Date.now(),91);
-          if(!isRoundParticipant(state,'desktop')||!isRoundParticipant(state,'mobile')) throw new Error('participant failed');
+          import { ROUND1_MIN_PLAYERS, ROUND1_COUNTDOWN_MS, createRoundState, greenDurationMs, checkpointFor, evaluateCheckpoint } from './game/js/round1-game.js';
+          if (ROUND1_MIN_PLAYERS !== 1) throw new Error('manual start minimum failed');
+          if (ROUND1_COUNTDOWN_MS !== 10000) throw new Error('countdown failed');
+          const state=createRoundState(['host'],1000,91);
+          if(state.activeIds.length!==1||state.phaseEndsAt!==11000) throw new Error('one-player state failed');
           for(let i=0;i<5;i++){
+            const duration=greenDurationMs(91,i);
+            if(duration<9500||duration>13000) throw new Error('green duration '+duration);
             const cp=checkpointFor(i,91);
             const zone=cp.zones.find(z=>z.year===cp.correctYear);
             if(!evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp}).pass) throw new Error('checkpoint '+i);
           }
-          console.log('round1 logic ok');
+          console.log('Round 1 logic ok');
           JS
       - name: Commit repaired game
         run: |
           git config user.name "Frothen-z"
           git config user.email "frothen234@gmail.com"
-          git add game/js/main.js game/js/services/peer-room.js game/css/style.css game/index.html game/vendor/peerjs.min.js SETTINGS_HERE.js
+          git add game/index.html game/css/style.css game/js/main.js game/js/round1-game.js game/js/services/auth-service.js
+          git diff --cached --stat
           if git diff --cached --quiet; then echo "No changes"; exit 0; fi
-          git commit -m "Fix mobile network startup"
+          git commit -m "Polish registration guest sync and Round 1 start flow"
           git push origin HEAD:main
