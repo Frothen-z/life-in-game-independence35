@@ -959,7 +959,7 @@ async function connectSupabaseMultiplayer(roomId) {
     onStatus: (status) => {
       if (status === 'SUBSCRIBED') {
         round1RealtimeReady = true;
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING') {
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING' || status === 'CONNECTING' || status === 'RECONNECTING') {
         round1RealtimeReady = false;
       }
       updateRound1LobbyUI();
