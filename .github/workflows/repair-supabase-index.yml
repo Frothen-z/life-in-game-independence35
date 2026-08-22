@@ -1,0 +1,41 @@
+name: Repair index and enable working Supabase config
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - repair-supabase-trigger.txt
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Restore exact index and only bump settings cache
+        run: |
+          git show 44c51e8a3976e8bd4598a3ee8cb483910b60430d:game/index.html > game/index.html
+          sed -i 's#../SETTINGS_HERE.js?v=1#../SETTINGS_HERE.js?v=supabase-live-1#' game/index.html
+          grep -q 'SETTINGS_HERE.js?v=supabase-live-1' game/index.html
+          grep -q 'round1-hud' game/index.html
+          grep -q 'mobile-controls' game/index.html
+          echo 'Index restored and cache-bust applied'
+      - name: Verify current public Supabase config
+        run: |
+          grep -q 'https://ahmnpindgabwlhwfoaxk.supabase.co' SETTINGS_HERE.js
+          grep -q 'sb_publishable_' SETTINGS_HERE.js
+          node --check game/js/main.js
+          node --check game/js/services/realtime-room.js
+      - name: Commit exact repair
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/index.html SETTINGS_HERE.js
+          git diff --cached --stat
+          git diff --cached -- game/index.html | sed -n '1,80p'
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Use working Supabase Realtime transport"
+          git push origin HEAD:main
