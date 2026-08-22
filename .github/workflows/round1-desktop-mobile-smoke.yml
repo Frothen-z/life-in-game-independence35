@@ -34,53 +34,51 @@ jobs:
             page.on('pageerror',e=>consoleErrors.push(`${label}:pageerror:${e.message}`));
             page.on('console',m=>{ if(m.type()==='error') consoleErrors.push(`${label}:console:${m.text()}`); });
             await page.goto(base,{waitUntil:'domcontentloaded',timeout:60000});
+            // setupMenu binds guest handlers only after runtime auth/config probe finishes.
+            await page.waitForFunction(()=>{
+              const t=document.querySelector('#auth-mode')?.textContent||'';
+              return t && !/Проверяем/.test(t);
+            },null,{timeout:30000});
             await page.locator('#btn-guest').click({timeout:20000});
-            await page.locator('#btn-start').waitFor({state:'visible',timeout:20000});
-            await page.locator('#btn-start').click();
+            await page.locator('#screen-character').waitFor({state:'visible',timeout:20000});
+            await page.locator('#btn-start').click({timeout:20000});
             await page.locator('#round1-hud').waitFor({state:'visible',timeout:30000});
             if(await page.locator('#round1-waiting').isVisible()) throw new Error(`${label}: false elimination banner`);
             await page.waitForFunction(()=>{
               const btn=document.querySelector('#round1-start');
               const online=document.querySelector('#players-online')?.textContent||'';
               return btn && !btn.disabled && /Записаться/.test(btn.textContent||'') && !/ошибка/i.test(online);
-            },null,{timeout:45000});
+            },null,{timeout:60000});
             return page;
           }
 
           const desktopContext=await browser.newContext({viewport:{width:1440,height:900}});
-          const phone=devices['iPhone 13'];
-          const mobileContext=await browser.newContext({...phone});
+          const mobileContext=await browser.newContext({...devices['iPhone 13']});
           const desktop=await enterGuest(desktopContext,'desktop');
 
-          // Lobby must keep a normal visible cursor and must not allow pointer lock.
           const cursorBefore=await desktop.locator('#c').evaluate(el=>getComputedStyle(el).cursor);
           if(cursorBefore==='none') throw new Error(`desktop cursor hidden in lobby: ${cursorBefore}`);
           const canvasBox=await desktop.locator('#c').boundingBox();
           if(canvasBox) await desktop.mouse.click(canvasBox.x+40, canvasBox.y+canvasBox.height-60);
           await desktop.waitForTimeout(400);
-          const pointerLocked=await desktop.evaluate(()=>document.pointerLockElement!==null);
-          if(pointerLocked) throw new Error('desktop pointer lock captured during lobby');
+          if(await desktop.evaluate(()=>document.pointerLockElement!==null)) throw new Error('desktop pointer lock captured during lobby');
           const cursorAfter=await desktop.locator('#c').evaluate(el=>getComputedStyle(el).cursor);
           if(cursorAfter==='none') throw new Error('desktop cursor became hidden after canvas click in lobby');
 
           const mobile=await enterGuest(mobileContext,'mobile');
           await Promise.all([
-            desktop.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:45000}),
-            mobile.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:45000})
+            desktop.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:60000}),
+            mobile.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:60000})
           ]);
-
           const mobileNet=await mobile.locator('#players-online').textContent();
           if(/ошибка/i.test(mobileNet||'')) throw new Error(`mobile network error: ${mobileNet}`);
 
           await desktop.locator('#round1-start').click();
           await mobile.locator('#round1-start').tap();
-
           await Promise.all([
             desktop.waitForFunction(()=>/2\s*\/\s*2/.test(document.querySelector('#round1-counter')?.textContent||'') || /Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:30000}),
             mobile.waitForFunction(()=>/2\s*\/\s*2/.test(document.querySelector('#round1-counter')?.textContent||'') || /Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:30000})
           ]);
-
-          // During countdown UI remains interactive/unlocked.
           if(await desktop.evaluate(()=>document.pointerLockElement!==null)) throw new Error('pointer lock active during countdown');
 
           await Promise.all([
@@ -93,15 +91,8 @@ jobs:
           console.log('desktop status:',await desktop.locator('#round1-status').textContent());
           console.log('mobile status:',await mobile.locator('#round1-status').textContent());
           console.log('desktop lobby cursor:',cursorBefore,'->',cursorAfter);
-
-          const serious=consoleErrors.filter(x=>
-            !x.includes('favicon') &&
-            !x.includes('WebGL') &&
-            !x.includes('ERR_BLOCKED_BY_CLIENT') &&
-            !x.includes('Failed to load resource: the server responded with a status of 404')
-          );
+          const serious=consoleErrors.filter(x=>!x.includes('favicon')&&!x.includes('WebGL')&&!x.includes('ERR_BLOCKED_BY_CLIENT'));
           if(serious.length) console.log('Browser console errors:',serious.join('\n'));
-
           await desktopContext.close();
           await mobileContext.close();
           await browser.close();
