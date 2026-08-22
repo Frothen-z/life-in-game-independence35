@@ -1,0 +1,70 @@
+name: Repair Round 1 multiplayer
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply repair patch
+        run: python tools/repair_round1.py
+      - name: Syntax checks
+        run: |
+          node --check game/js/main.js
+          node --check game/js/round1-game.js
+      - name: Round 1 unit checks
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {
+            ROUND1_MIN_PLAYERS,
+            ROUND1_MAX_PLAYERS,
+            ROUND1_QUESTIONS,
+            checkpointFor,
+            evaluateCheckpoint,
+            registeredPlayerIds,
+            isRoundParticipant,
+            createRoundState
+          } from './game/js/round1-game.js';
+          assert.equal(ROUND1_MIN_PLAYERS, 2);
+          assert.equal(ROUND1_MAX_PLAYERS, 8);
+          assert.deepEqual(registeredPlayerIds([
+            {id:'a', joined:true},
+            {id:'b', joined:false},
+            {id:'a', joined:true},
+            {key:'c', joined:true}
+          ]), ['a','c']);
+          const state = createRoundState(['a','c'], 1000, 123);
+          assert.deepEqual(state.participantIds, ['a','c']);
+          assert.equal(isRoundParticipant(state, 'a'), true);
+          assert.equal(isRoundParticipant(state, 'b'), false);
+          assert.equal(state.phase, 'countdown');
+          assert.ok(state.phaseEndsAt - state.createdAt >= 7000);
+          for (let i = 0; i < ROUND1_QUESTIONS.length; i += 1) {
+            const cp = checkpointFor(i, state.seed);
+            const good = cp.zones.find(z => z.year === cp.correctYear);
+            assert.equal(evaluateCheckpoint({x:good.x,z:good.z,movedDistance:0,checkpoint:cp}).pass, true);
+            assert.equal(evaluateCheckpoint({x:good.x,z:good.z,movedDistance:0.5,checkpoint:cp}).pass, false);
+          }
+          console.log('Round 1 unit checks passed');
+          NODE
+      - name: Commit repaired game
+        run: |
+          rm -f tools/repair_round1.py .github/workflows/repair-round1.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          rmdir tools 2>/dev/null || true
+          git config user.name 'Frothen-z'
+          git config user.email 'frothen234@gmail.com'
+          git add -A
+          git commit -m 'Fix Round 1 multiplayer queue and sync'
+          git push origin HEAD:main
