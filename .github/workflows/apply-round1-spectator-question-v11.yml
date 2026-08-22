@@ -1,0 +1,62 @@
+name: Apply Round 1 spectator and question timing v11
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - spectator-question-trigger.txt
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply spectator and question timing patch
+        run: python tools/apply_round1_spectator_question_v11.py
+      - name: Syntax and invariants
+        run: |
+          node --check game/js/main.js
+          node --check game/js/round1-game.js
+          python - <<'PY'
+          from pathlib import Path
+          main=Path('game/js/main.js').read_text(encoding='utf-8')
+          r1=Path('game/js/round1-game.js').read_text(encoding='utf-8')
+          html=Path('game/index.html').read_text(encoding='utf-8')
+          css=Path('game/css/style.css').read_text(encoding='utf-8')
+          assert 'ROUND1_COUNTDOWN_MS = 15000' in r1
+          assert 'updateRound1SpectatorCamera' in main
+          assert "round1QuestionBoard.visible = phase === 'countdown'" in main
+          assert "next.phase = 'countdown'" in main
+          assert 'Читайте вопрос · ${seconds} сек.' in main
+          assert 'player.visible = false' in main
+          assert 'Режим наблюдателя' in html
+          assert 'round1-spectator-11' in html
+          assert 'ROUND1_SPECTATOR_V11' in css
+          print('spectator/question v11 invariants ok')
+          PY
+      - name: Logic test
+        run: |
+          node --input-type=module <<'JS'
+          import { ROUND1_COUNTDOWN_MS, createRoundState, checkpointFor, evaluateCheckpoint } from './game/js/round1-game.js';
+          if (ROUND1_COUNTDOWN_MS !== 15000) throw new Error('question timer must be 15s');
+          const s=createRoundState(['a','b'],1000,123);
+          if(s.phase!=='countdown'||s.phaseEndsAt!==16000) throw new Error('initial reading phase failed');
+          const cp=checkpointFor(0,123);
+          const ok=cp.zones.find(z=>z.year===cp.correctYear);
+          if(!evaluateCheckpoint({x:ok.x,z:ok.z,movedDistance:0,checkpoint:cp}).pass) throw new Error('checkpoint rules changed');
+          console.log('round1 v11 logic ok');
+          JS
+      - name: Commit game changes
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/index.html game/css/style.css game/js/main.js game/js/round1-game.js
+          git diff --cached --stat
+          if git diff --cached --quiet; then echo "No game changes"; exit 0; fi
+          git commit -m "Add Round 1 spectator camera and 15 second question phase"
+          git push origin HEAD:main
