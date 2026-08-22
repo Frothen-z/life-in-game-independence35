@@ -2183,6 +2183,7 @@ body.round1-mode:not(.round1-playing),
 body.round1-mode:not(.round1-playing) #c { cursor: default !important; }
 body.round1-mode.round1-playing #c { cursor: none !important; }
 body.round1-mode:not(.round1-playing) .mobile-controls { pointer-events: none !important; opacity: .18; }
+body.round1-mode:not(.round1-playing) #mobile-controls { display: none !important; }
 .round1-start { pointer-events: auto !important; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .round1-hud { cursor: default; }
 
