@@ -1213,13 +1213,15 @@ function syncRound1InputMode() {
 function updateRound1LobbyUI() {
   if (!round1Hud) return;
   syncRound1InputMode();
-  round1Hud.classList.remove('hidden');
+  document.body.classList.toggle('round1-match-active', Boolean(round1State));
   if (round1State) {
+    round1Hud.classList.add('hidden');
     round1StartButton?.classList.add('hidden');
     round1CancelButton?.classList.add('hidden');
     refreshRound1Visuals();
     return;
   }
+  round1Hud.classList.remove('hidden');
 
   resetLocalRound1Flags();
   if (player) player.visible = true;
@@ -1362,6 +1364,7 @@ function resetRound1ToLobby({ broadcast = false, message = '' } = {}) {
   round1FinishedResetAt = 0;
   round1HostTimer = 0;
   round1State = null;
+  document.body.classList.remove('round1-match-active');
   round1Joined = false;
   round1JoinedAt = 0;
   resetLocalRound1Flags();
@@ -1506,6 +1509,8 @@ function setRound1State(incoming, options = {}) {
     round1State.participantIds = [...new Set([...(round1State.activeIds || []), ...(round1State.eliminatedIds || []), ...(round1State.passedIds || [])].map(String))];
   }
   round1HostId = round1State.hostId || round1HostId;
+  document.body.classList.add('round1-match-active');
+  round1Hud?.classList.add('hidden');
   const localParticipant = isRoundParticipant(round1State, playerId);
 
   if (previousRoundId !== round1State.roundId) {
@@ -5830,6 +5835,7 @@ function createRoundOneArena() {
   );
   round1QuestionBoard.position.set(12.5, 9.4, 55.5);
   round1QuestionBoard.rotation.y = Math.PI * 0.88;
+  round1QuestionBoard.visible = false;
   arena.add(round1QuestionBoard);
 
   round1Doll = createRound1Doll();

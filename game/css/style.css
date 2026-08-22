@@ -2295,3 +2295,41 @@ body.round1-mode:not(.round1-playing) #mobile-controls { display: none !importan
     padding: 10px 12px;
   }
 }
+
+
+/* ROUND1_CLEAN_HUD_V12 */
+.round1-rules {
+  display: grid;
+  gap: 6px;
+  width: min(680px, 100%);
+  margin: 10px auto 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 14px;
+  background: rgba(7, 21, 37, 0.52);
+  color: rgba(239, 248, 255, 0.82);
+  text-align: left;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.round1-rules strong {
+  color: #fff;
+  font-size: 0.88rem;
+  text-align: center;
+  margin-bottom: 2px;
+}
+.round1-rules b { color: #7dd3fc; }
+
+/* The large lobby HUD must never cover the arena once a match has started. */
+body.round1-match-active #round1-hud {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .round1-rules {
+    gap: 5px;
+    margin: 8px auto 10px;
+    padding: 10px 11px;
+    font-size: 0.72rem;
+  }
+}

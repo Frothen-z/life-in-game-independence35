@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Life in Game</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css?v=round1-spectator-11">
+  <link rel="stylesheet" href="css/style.css?v=round1-cleanhud-12">
   <script type="importmap">
   {
     "imports": {
@@ -207,6 +207,13 @@
       </div>
       <div id="round1-question" class="round1-question">Ожидание игроков...</div>
       <div id="round1-status" class="round1-status">Соберитесь на стартовой площади</div>
+      <div id="round1-rules" class="round1-rules">
+        <strong>Как играть</strong>
+        <span><b>1.</b> Перед каждой точкой у вас 15 секунд, чтобы прочитать вопрос.</span>
+        <span><b>2.</b> Когда кукла отвернулась — бегите к правильной 3D-дате.</span>
+        <span><b>3.</b> Когда кукла повернулась — замрите. Движение или неверный ответ = выбывание.</span>
+        <span><b>4.</b> Выбывшие продолжают смотреть матч в режиме наблюдателя.</span>
+      </div>
       <button type="button" id="round1-start" class="round1-start hidden">Записаться на участие</button>
       <button type="button" id="round1-cancel" class="round1-cancel hidden">Отменить запись</button>
     </section>
@@ -432,6 +439,6 @@
 
   <canvas id="c"></canvas>
   <script src="../SETTINGS_HERE.js?v=supabase-live-1"></script>
-  <script type="module" src="js/main.js?v=round1-spectator-11"></script>
+  <script type="module" src="js/main.js?v=round1-cleanhud-12"></script>
 </body>
 </html>
