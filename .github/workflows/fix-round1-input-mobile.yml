@@ -1,4 +1,4 @@
-name: Fix Round 1 input and mobile network
+name: Fix Round 1 watcher composition
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
@@ -16,60 +16,27 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Apply full Round 1 flow repair
-        run: python tools/run_round1_flow_v10.py
-      - name: Syntax and invariant checks
+      - name: Make watcher monumental and unobstructed
+        run: python tools/make_round1_watcher_giant.py
+      - name: Syntax and composition checks
         run: |
           node --check game/js/main.js
-          node --check game/js/round1-game.js
-          node --check game/js/services/auth-service.js
           python - <<'PY'
           from pathlib import Path
-          html=Path('game/index.html').read_text(encoding='utf-8')
-          css=Path('game/css/style.css').read_text(encoding='utf-8')
           main=Path('game/js/main.js').read_text(encoding='utf-8')
-          auth=Path('game/js/services/auth-service.js').read_text(encoding='utf-8')
-          r1=Path('game/js/round1-game.js').read_text(encoding='utf-8')
-          assert 'id="reg-username"' not in html
-          assert 'name="gender"' not in html
-          assert 'id="reg-consent"' not in html
-          assert all(x in html for x in ['id="reg-name"','id="reg-email"','id="reg-pass"','id="round1-cancel"'])
-          assert 'round1-flow-10' in html
-          assert 'ROUND1_FLOW_V10' in css and '100dvh' in css
-          assert 'createInternalUsername' in auth and 'const PHOTO_TYPES = new Map' in auth
-          assert 'Такой логин уже занят' not in auth
-          assert 'round1GuestRealtimeClient' in main and 'persistSession: false' in main
-          assert 'round1JoinedAt' in main and 'Начать игру · ${queued.length}' in main
-          assert 'startRound1Match(fresh.slice' not in main
-          assert 'round1Doll.position.set(0, 0, 71.5)' in main
-          assert 'round1QuestionBoard.position.set(0, 14.2, 73.5)' in main
-          assert 'yaw: Math.PI, rot: 0' in main
-          assert 'ROUND1_COUNTDOWN_MS = 10000' in r1
-          print('Round 1 flow v10 invariants ok')
+          assert 'round1Doll.scale.setScalar(3.55)' in main
+          assert 'round1Doll.position.set(0, 0.25, 70.5)' in main
+          assert 'round1QuestionBoard.position.set(12.5, 9.4, 55.5)' in main
+          assert 'watcherKey = new THREE.SpotLight' in main
+          assert 'watcherRim = new THREE.PointLight' in main
+          print('Giant watcher composition checks passed')
           PY
-      - name: Round 1 logic checks
-        run: |
-          node --input-type=module <<'JS'
-          import { ROUND1_MIN_PLAYERS, ROUND1_COUNTDOWN_MS, createRoundState, greenDurationMs, checkpointFor, evaluateCheckpoint } from './game/js/round1-game.js';
-          if (ROUND1_MIN_PLAYERS !== 1) throw new Error('manual start minimum failed');
-          if (ROUND1_COUNTDOWN_MS !== 10000) throw new Error('countdown failed');
-          const state=createRoundState(['host'],1000,91);
-          if(state.activeIds.length!==1||state.phaseEndsAt!==11000) throw new Error('one-player state failed');
-          for(let i=0;i<5;i++){
-            const duration=greenDurationMs(91,i);
-            if(duration<9500||duration>13000) throw new Error('green duration '+duration);
-            const cp=checkpointFor(i,91);
-            const zone=cp.zones.find(z=>z.year===cp.correctYear);
-            if(!evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp}).pass) throw new Error('checkpoint '+i);
-          }
-          console.log('Round 1 logic ok');
-          JS
-      - name: Commit repaired game
+      - name: Commit watcher redesign
         run: |
           git config user.name "Frothen-z"
           git config user.email "frothen234@gmail.com"
-          git add game/index.html game/css/style.css game/js/main.js game/js/round1-game.js game/js/services/auth-service.js
+          git add game/js/main.js
           git diff --cached --stat
           if git diff --cached --quiet; then echo "No changes"; exit 0; fi
-          git commit -m "Polish registration guest sync and Round 1 start flow"
+          git commit -m "Make Round 1 watcher monumental and visible"
           git push origin HEAD:main
