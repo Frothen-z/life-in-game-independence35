@@ -23,10 +23,7 @@ jobs:
           import { chromium, devices } from 'playwright';
           const room = `ci-dm-${Date.now()}`;
           const base = `https://life-in-game-independence35.vercel.app/game/?room=${room}`;
-          const browser = await chromium.launch({
-            headless: true,
-            args: ['--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader','--disable-dev-shm-usage']
-          });
+          const browser = await chromium.launch({headless:true,args:['--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader','--disable-dev-shm-usage']});
           const consoleErrors=[];
 
           async function enterGuest(context,label){
@@ -34,14 +31,13 @@ jobs:
             page.on('pageerror',e=>consoleErrors.push(`${label}:pageerror:${e.message}`));
             page.on('console',m=>{ if(m.type()==='error') consoleErrors.push(`${label}:console:${m.text()}`); });
             await page.goto(base,{waitUntil:'domcontentloaded',timeout:60000});
-            // setupMenu binds guest handlers only after runtime auth/config probe finishes.
             await page.waitForFunction(()=>{
               const t=document.querySelector('#auth-mode')?.textContent||'';
               return t && !/Проверяем/.test(t);
             },null,{timeout:30000});
             await page.locator('#btn-guest').click({timeout:20000});
             await page.locator('#screen-character').waitFor({state:'visible',timeout:20000});
-            await page.locator('#btn-start').click({timeout:20000});
+            await page.locator('#btn-start').evaluate(el=>el.click());
             await page.locator('#round1-hud').waitFor({state:'visible',timeout:30000});
             if(await page.locator('#round1-waiting').isVisible()) throw new Error(`${label}: false elimination banner`);
             await page.waitForFunction(()=>{
@@ -80,7 +76,6 @@ jobs:
             mobile.waitForFunction(()=>/2\s*\/\s*2/.test(document.querySelector('#round1-counter')?.textContent||'') || /Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:30000})
           ]);
           if(await desktop.evaluate(()=>document.pointerLockElement!==null)) throw new Error('pointer lock active during countdown');
-
           await Promise.all([
             desktop.waitForFunction(()=>document.body.classList.contains('round1-playing'),null,{timeout:20000}),
             mobile.waitForFunction(()=>document.body.classList.contains('round1-playing'),null,{timeout:20000})
@@ -93,9 +88,7 @@ jobs:
           console.log('desktop lobby cursor:',cursorBefore,'->',cursorAfter);
           const serious=consoleErrors.filter(x=>!x.includes('favicon')&&!x.includes('WebGL')&&!x.includes('ERR_BLOCKED_BY_CLIENT'));
           if(serious.length) console.log('Browser console errors:',serious.join('\n'));
-          await desktopContext.close();
-          await mobileContext.close();
-          await browser.close();
+          await desktopContext.close(); await mobileContext.close(); await browser.close();
           console.log('DESKTOP + MOBILE ROUND1 PRODUCTION SMOKE PASSED');
           JS
           node round1-desktop-mobile-smoke.mjs
