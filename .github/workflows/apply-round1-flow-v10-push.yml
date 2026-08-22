@@ -1,0 +1,140 @@
+name: Direct apply Round 1 flow v10
+on:
+  push:
+    branches: [main]
+    paths:
+      - apply-flow-v10-now.txt
+permissions:
+  contents: write
+jobs:
+  repair-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply requested UX and multiplayer fixes
+        run: python tools/fix_round1_flow_v10.py
+      - name: Syntax and static checks
+        run: |
+          node --check game/js/main.js
+          node --check game/js/round1-game.js
+          node --check game/js/services/auth-service.js
+          python - <<'PY'
+          from pathlib import Path
+          html=Path('game/index.html').read_text(encoding='utf-8')
+          css=Path('game/css/style.css').read_text(encoding='utf-8')
+          main=Path('game/js/main.js').read_text(encoding='utf-8')
+          auth=Path('game/js/services/auth-service.js').read_text(encoding='utf-8')
+          r1=Path('game/js/round1-game.js').read_text(encoding='utf-8')
+          assert 'id="reg-username"' not in html
+          assert 'name="gender"' not in html
+          assert 'id="reg-consent"' not in html
+          assert all(x in html for x in ['id="reg-name"','id="reg-email"','id="reg-pass"','id="round1-cancel"'])
+          assert 'round1-flow-10' in html
+          assert 'ROUND1_FLOW_V10' in css and '100dvh' in css
+          assert 'createInternalUsername' in auth and 'Такой логин уже занят' not in auth
+          assert 'round1GuestRealtimeClient' in main and 'persistSession: false' in main
+          assert 'round1JoinedAt' in main and 'Начать игру · ${queued.length}' in main
+          assert 'startRound1Match(fresh.slice' not in main
+          assert 'round1Doll.position.set(0, 0, 71.5)' in main
+          assert 'round1QuestionBoard.position.set(0, 14.2, 73.5)' in main
+          assert 'yaw: Math.PI, rot: 0' in main
+          assert 'ROUND1_COUNTDOWN_MS = 10000' in r1
+          print('static checks ok')
+          PY
+      - name: Round logic unit checks
+        run: |
+          node --input-type=module <<'JS'
+          import { ROUND1_MIN_PLAYERS, ROUND1_COUNTDOWN_MS, createRoundState, greenDurationMs, checkpointFor, evaluateCheckpoint } from './game/js/round1-game.js';
+          if (ROUND1_MIN_PLAYERS !== 1) throw new Error('manual start not enabled');
+          if (ROUND1_COUNTDOWN_MS !== 10000) throw new Error('countdown not extended');
+          const one=createRoundState(['host'],1000,7);
+          if(one.activeIds.length!==1||one.phaseEndsAt!==11000) throw new Error('single host state failed');
+          for(let i=0;i<5;i++){
+            const d=greenDurationMs(123,i);
+            if(d<9500||d>13000) throw new Error('green duration '+d);
+            const cp=checkpointFor(i,123);
+            const zone=cp.zones.find(z=>z.year===cp.correctYear);
+            if(!evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp}).pass) throw new Error('checkpoint '+i);
+          }
+          console.log('round logic ok');
+          JS
+      - name: Commit repaired game
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/index.html game/css/style.css game/js/main.js game/js/round1-game.js game/js/services/auth-service.js
+          git diff --cached --stat
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Polish registration guest sync and Round 1 start flow"
+          git push origin HEAD:main
+      - name: Wait for production deployment
+        run: |
+          for i in $(seq 1 50); do
+            if curl -fsSL --max-time 15 https://life-in-game-independence35.vercel.app/game/ | grep -q 'round1-flow-10'; then echo production-updated; exit 0; fi
+            sleep 4
+          done
+          exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Browser smoke test
+        run: |
+          cat > /tmp/flow-v10-smoke.mjs <<'JS'
+          import { chromium, devices } from 'playwright';
+          const room=`flow-v10-${Date.now()}`;
+          const url=`https://life-in-game-independence35.vercel.app/game/?room=${room}`;
+          const browser=await chromium.launch({headless:true,args:['--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader','--disable-dev-shm-usage']});
+          const errors=[];
+          const desktop=await browser.newContext({viewport:{width:1366,height:768}});
+          const mobile=await browser.newContext({...devices['iPhone 13']});
+          async function enter(page,label,fit=false){
+            page.on('pageerror',e=>errors.push(`${label}:page:${e.message}`));
+            page.on('console',m=>{if(m.type()==='error') errors.push(`${label}:console:${m.text()}`)});
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000});
+            await page.waitForFunction(()=>{const t=document.querySelector('#auth-mode')?.textContent||'';return t&&!/Проверяем/.test(t)},null,{timeout:30000});
+            if(fit){
+              const x=await page.evaluate(()=>{const f=document.querySelector('#form-register'),r=document.querySelector('#screen-auth').getBoundingClientRect();return{fields:f.querySelectorAll('input').length,username:!!document.querySelector('#reg-username'),gender:!!document.querySelector('input[name="gender"]'),consent:!!document.querySelector('#reg-consent'),top:r.top,bottom:r.bottom,h:innerHeight}});
+              if(x.fields!==3||x.username||x.gender||x.consent||x.top< -1||x.bottom>x.h+1) throw new Error('mobile auth fit '+JSON.stringify(x));
+            }
+            await page.locator('#btn-guest').evaluate(el=>el.click());
+            await page.locator('#screen-character').waitFor({state:'visible',timeout:20000});
+            await page.locator('#btn-start').evaluate(el=>el.click());
+            await page.locator('#round1-hud').waitFor({state:'visible',timeout:30000});
+            await page.waitForFunction(()=>{const b=document.querySelector('#round1-start');return b&&!b.disabled&&/Записаться/.test(b.textContent||'')},null,{timeout:40000});
+          }
+          const host=await desktop.newPage(); await enter(host,'host');
+          const guest2=await desktop.newPage(); await enter(guest2,'guest2');
+          const phone=await mobile.newPage(); await enter(phone,'phone',true);
+          for(const p of [host,guest2,phone]) await p.waitForFunction(()=>/Онлайн:\s*3/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:30000});
+          await host.locator('#round1-start').click();
+          await host.waitForFunction(()=>{const b=document.querySelector('#round1-start');return b&&!b.disabled&&/Начать игру\s*·\s*1/.test(b.textContent||'')},null,{timeout:15000});
+          await host.waitForTimeout(900);
+          await guest2.locator('#round1-start').click();
+          await phone.locator('#round1-start').tap({timeout:15000});
+          await host.waitForFunction(()=>/Начать игру\s*·\s*3/.test(document.querySelector('#round1-start')?.textContent||''),null,{timeout:15000});
+          await guest2.waitForFunction(()=>/Ожидаем ведущего/.test(document.querySelector('#round1-start')?.textContent||''),null,{timeout:15000});
+          await host.locator('#round1-start').click();
+          for(const p of [host,guest2,phone]) await p.waitForFunction(()=>/Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:15000});
+          if(await phone.locator('#mobile-controls').evaluate(el=>getComputedStyle(el).display)!=='none') throw new Error('mobile controls cover countdown');
+          await host.waitForFunction(()=>/ОТВЕРНУЛСЯ/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:16000});
+          const before=await host.evaluate(()=>window.__playerRef?.position?.z ?? null);
+          await host.keyboard.down('w'); await host.waitForTimeout(900); await host.keyboard.up('w');
+          const after=await host.evaluate(()=>window.__playerRef?.position?.z ?? null);
+          if(before==null||after==null||after<=before+0.2) throw new Error(`wrong course direction ${before}->${after}`);
+          const serious=errors.filter(x=>!x.includes('favicon')&&!x.includes('WebGL')&&!x.includes('ERR_BLOCKED_BY_CLIENT')&&!x.includes('THREE.WebGLRenderer'));
+          if(serious.length) throw new Error(serious.join('\n'));
+          console.log('online',await host.locator('#players-online').textContent());
+          console.log('z',before,'->',after);
+          console.log('FLOW V10 SMOKE PASSED');
+          await desktop.close();await mobile.close();await browser.close();
+          JS
+          node /tmp/flow-v10-smoke.mjs
