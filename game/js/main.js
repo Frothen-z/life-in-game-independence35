@@ -5818,16 +5818,27 @@ function createRoundOneArena() {
   });
 
   round1QuestionBoard = new THREE.Mesh(
-    new THREE.PlaneGeometry(16, 3.6),
+    new THREE.PlaneGeometry(12.8, 3.0),
     new THREE.MeshBasicMaterial({ map: makeSignTexture('РАУНД 1', 'ожидание старта', '#071525', '#ffffff'), transparent: true })
   );
-  round1QuestionBoard.position.set(0, 14.2, 73.5);
-  round1QuestionBoard.rotation.y = Math.PI;
+  round1QuestionBoard.position.set(12.5, 9.4, 55.5);
+  round1QuestionBoard.rotation.y = Math.PI * 0.88;
   arena.add(round1QuestionBoard);
 
   round1Doll = createRound1Doll();
-  round1Doll.position.set(0, 0, 71.5);
-  round1Doll.scale.setScalar(1.16);
+  round1Doll.position.set(0, 0.25, 70.5);
+  // Monumental watcher: visible from the start line above every answer board.
+  round1Doll.scale.setScalar(3.55);
+
+  const watcherKey = new THREE.SpotLight(0xfff1d6, 3.2, 145, Math.PI / 5.5, 0.42, 1.15);
+  watcherKey.position.set(-14, 35, 43);
+  watcherKey.target.position.set(0, 15, 70.5);
+  arena.add(watcherKey);
+  arena.add(watcherKey.target);
+
+  const watcherRim = new THREE.PointLight(0x8fd8ff, 1.25, 62, 2);
+  watcherRim.position.set(10, 22, 74);
+  arena.add(watcherRim);
   round1Doll.rotation.y = Math.PI; // green: looking away
   arena.add(round1Doll);
 
