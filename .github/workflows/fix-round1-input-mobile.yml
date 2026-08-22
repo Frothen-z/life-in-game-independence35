@@ -1,0 +1,202 @@
+name: Fix Round 1 input and mobile network
+on:
+  pull_request:
+    branches: [main]
+    paths: ['input-mobile-trigger.txt']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch lobby input and mobile networking
+        shell: python
+        run: |
+          from pathlib import Path
+
+          main = Path('game/js/main.js')
+          text = main.read_text(encoding='utf-8')
+
+          # 1) Explicit lobby/game input mode. Pointer lock must never trap the cursor before the match.
+          marker = "function updateRound1LobbyUI() {\n"
+          helper = """function syncRound1InputMode() {\n  const localParticipant = !!round1State && isRoundParticipant(round1State, playerId);\n  const playing = Boolean(\n    round1State &&\n    localParticipant &&\n    !round1IsSpectator &&\n    round1State.activeIds?.includes(String(playerId)) &&\n    round1State.phase !== 'countdown' &&\n    round1State.phase !== 'finished'\n  );\n  document.body.classList.toggle('round1-playing', playing);\n  if (!playing && document.pointerLockElement) {\n    try { document.exitPointerLock(); } catch {}\n  }\n}\n\n"""
+          if 'function syncRound1InputMode()' not in text:
+              assert marker in text, 'round1 lobby marker missing'
+              text = text.replace(marker, helper + marker, 1)
+
+          # Make lobby update release pointer lock before showing the registration UI.
+          old = """function updateRound1LobbyUI() {\n  if (!round1Hud) return;\n  round1Hud.classList.remove('hidden');"""
+          new = """function updateRound1LobbyUI() {\n  if (!round1Hud) return;\n  syncRound1InputMode();\n  round1Hud.classList.remove('hidden');"""
+          assert old in text or new in text, 'updateRound1LobbyUI header missing'
+          text = text.replace(old, new, 1)
+
+          # State transitions also update cursor/input mode immediately.
+          old = """  round1StartButton?.classList.add('hidden');\n  refreshRound1Visuals();\n}"""
+          new = """  round1StartButton?.classList.add('hidden');\n  syncRound1InputMode();\n  refreshRound1Visuals();\n}"""
+          assert old in text or new in text, 'setRound1State tail missing'
+          text = text.replace(old, new, 1)
+
+          old = """  round1IsSpectator = true;\n  round1WaitingNotice?.classList.remove('hidden');"""
+          new = """  round1IsSpectator = true;\n  syncRound1InputMode();\n  round1WaitingNotice?.classList.remove('hidden');"""
+          assert old in text or new in text, 'elimination marker missing'
+          text = text.replace(old, new, 1)
+
+          # Pointer lock/camera capture only during active gameplay, never in registration/countdown/spectator mode.
+          old = """  function canCaptureMouse() {\n    const menu = document.getElementById('menu');\n    if (menu && !menu.classList.contains('hidden')) return false;\n    if (restaurantOpen || mafiaOpen || mafiaInGame || cinemaOpen || cinemaInRoom) return false;\n    const cr = document.getElementById('cinema-room');\n    if (cr && !cr.classList.contains('hidden')) return false;\n    return true;\n  }"""
+          new = """  function canCaptureMouse() {\n    const menu = document.getElementById('menu');\n    if (menu && !menu.classList.contains('hidden')) return false;\n    if (restaurantOpen || mafiaOpen || mafiaInGame || cinemaOpen || cinemaInRoom) return false;\n    const cr = document.getElementById('cinema-room');\n    if (cr && !cr.classList.contains('hidden')) return false;\n    if (document.body.classList.contains('round1-mode')) {\n      const activeRoundPlayer = Boolean(\n        round1State &&\n        isRoundParticipant(round1State, playerId) &&\n        round1State.activeIds?.includes(String(playerId)) &&\n        !round1IsSpectator &&\n        round1State.phase !== 'countdown' &&\n        round1State.phase !== 'finished'\n      );\n      if (!activeRoundPlayer) return false;\n    }\n    return true;\n  }"""
+          assert old in text or new in text, 'canCaptureMouse block missing'
+          text = text.replace(old, new, 1)
+
+          # Touch-safe registration; prevent the mobile joystick/look overlay from swallowing the action.
+          old = """  if (round1StartButton && !round1StartButton.dataset.round1Bound) {\n    round1StartButton.dataset.round1Bound = '1';\n    round1StartButton.addEventListener('click', () => setRound1Registration(!round1Joined));\n  }"""
+          new = """  if (round1StartButton && !round1StartButton.dataset.round1Bound) {\n    round1StartButton.dataset.round1Bound = '1';\n    let lastTouchJoin = 0;\n    const joinAction = (event) => {\n      event?.stopPropagation?.();\n      setRound1Registration(!round1Joined);\n    };\n    round1StartButton.addEventListener('click', (event) => {\n      if (Date.now() - lastTouchJoin < 700) return;\n      joinAction(event);\n    });\n    round1StartButton.addEventListener('touchend', (event) => {\n      event.preventDefault();\n      lastTouchJoin = Date.now();\n      joinAction(event);\n    }, { passive: false });\n  }"""
+          assert old in text or new in text, 'round1 start binding missing'
+          text = text.replace(old, new, 1)
+
+          # Mobile / flaky network: retry the P2P fallback up to three times before showing a fatal error.
+          old = """  try {\n    await connectSupabaseMultiplayer(roomId);\n    showToast('Гостевая P2P-сеть готова · запишитесь на Раунд 1');\n    if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;\n    return;\n  } catch (peerError) {\n    console.error('Peer fallback failed', peerError);\n    round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];\n    round1HostId = playerId;\n    round1RealtimeReady = false;\n    resetLocalRound1Flags();\n    updateRound1LobbyUI();\n    showToast('Не удалось подключиться к сетевой комнате. Проверьте интернет и обновите страницу.');\n    if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';\n  }"""
+          new = """  let peerError = null;\n  for (let attempt = 1; attempt <= 3; attempt += 1) {\n    try {\n      try { await cityRoom?.close?.(); } catch {}\n      cityRoom = null;\n      p2pSend = null;\n      if (onlineEl) onlineEl.textContent = `Сеть: подключение ${attempt}/3…`;\n      await connectSupabaseMultiplayer(roomId);\n      showToast('Гостевая сеть готова · запишитесь на Раунд 1');\n      if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;\n      return;\n    } catch (error) {\n      peerError = error;\n      console.warn(`Peer fallback attempt ${attempt} failed`, error);\n      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 900 * attempt));\n    }\n  }\n  console.error('Peer fallback failed', peerError);\n  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];\n  round1HostId = playerId;\n  round1RealtimeReady = false;\n  resetLocalRound1Flags();\n  updateRound1LobbyUI();\n  showToast('Сеть не подключилась. Проверьте интернет и нажмите обновить страницу.');\n  if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';"""
+          assert old in text or 'Peer fallback attempt' in text, 'fallback block missing'
+          text = text.replace(old, new, 1)
+
+          main.write_text(text, encoding='utf-8')
+
+          # 2) PeerJS: multiple CDN sources, explicit STUN servers, mobile-friendly timeouts/reconnect.
+          peer = Path('game/js/services/peer-room.js')
+          p = peer.read_text(encoding='utf-8')
+          p = p.replace(
+              "const PEERJS_CDN = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';",
+              "const PEERJS_SOURCES = [\n  'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js',\n  'https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js'\n];\nconst PEER_ICE_CONFIG = {\n  iceServers: [\n    { urls: 'stun:stun.l.google.com:19302' },\n    { urls: 'stun:stun1.l.google.com:19302' },\n    { urls: 'stun:global.stun.twilio.com:3478' }\n  ],\n  iceCandidatePoolSize: 4\n};\nconst peerOptions = () => ({ debug: 0, config: PEER_ICE_CONFIG });"
+          )
+
+          start = p.index('function loadPeerJs() {')
+          end = p.index('\n\nfunction hashText', start)
+          assert start >= 0 and end > start, 'loadPeerJs block missing'
+          loader = r'''function loadPeerJs() {
+  if (globalThis.Peer) return Promise.resolve(globalThis.Peer);
+  if (peerJsPromise) return peerJsPromise;
+  peerJsPromise = (async () => {
+    let lastError = null;
+    for (const source of PEERJS_SOURCES) {
+      try {
+        await new Promise((resolve, reject) => {
+          const old = document.querySelector('script[data-life-peerjs="1"]');
+          if (old) old.remove();
+          const script = document.createElement('script');
+          script.src = source;
+          script.async = true;
+          script.crossOrigin = 'anonymous';
+          script.dataset.lifePeerjs = '1';
+          const timeout = setTimeout(() => reject(new Error('PEERJS_LOAD_TIMEOUT')), 18000);
+          script.onload = () => {
+            clearTimeout(timeout);
+            globalThis.Peer ? resolve(true) : reject(new Error('PEERJS_GLOBAL_MISSING'));
+          };
+          script.onerror = () => {
+            clearTimeout(timeout);
+            reject(new Error('PEERJS_LOAD_FAILED'));
+          };
+          document.head.appendChild(script);
+        });
+        if (globalThis.Peer) return globalThis.Peer;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    peerJsPromise = null;
+    throw lastError || new Error('PEERJS_LOAD_FAILED');
+  })();
+  return peerJsPromise;
+}'''
+          p = p[:start] + loader + p[end:]
+          p = p.replace("new PeerCtor(undefined, { debug: 0 })", "new PeerCtor(undefined, peerOptions())")
+          p = p.replace("new PeerCtor(roomKey, { debug: 0 })", "new PeerCtor(roomKey, peerOptions())")
+          p = p.replace("}, 12000);", "}, 20000);")
+          p = p.replace("}, 9000);", "}, 18000);")
+          p = p.replace("}, 500 + Math.floor(Math.random() * 900));", "}, 900 + Math.floor(Math.random() * 1600));")
+
+          # Reconnect when a phone returns online or the tab becomes visible again.
+          marker = "  const peerToPlayer = new Map();\n"
+          addition = """  const peerToPlayer = new Map();\n  const onlineHandler = () => { if (!closed && !peer?.open) scheduleReconnect(); };\n  const visibilityHandler = () => { if (!closed && document.visibilityState === 'visible' && !peer?.open) scheduleReconnect(); };\n  globalThis.addEventListener?.('online', onlineHandler);\n  document.addEventListener?.('visibilitychange', visibilityHandler);\n"""
+          if 'const onlineHandler =' not in p:
+              assert marker in p, 'peer map marker missing'
+              p = p.replace(marker, addition, 1)
+
+          old_close = """    onStatus?.('CLOSED');\n    destroyPeer();\n    membersMap.clear();"""
+          new_close = """    onStatus?.('CLOSED');\n    globalThis.removeEventListener?.('online', onlineHandler);\n    document.removeEventListener?.('visibilitychange', visibilityHandler);\n    destroyPeer();\n    membersMap.clear();"""
+          assert old_close in p or new_close in p, 'peer close marker missing'
+          p = p.replace(old_close, new_close, 1)
+          peer.write_text(p, encoding='utf-8')
+
+          # 3) UI: visible cursor in lobby, touch-safe button, controls don't cover the lobby.
+          css = Path('game/css/style.css')
+          c = css.read_text(encoding='utf-8')
+          marker = ".round1-start.joined{background:linear-gradient(135deg,#475569,#334155);box-shadow:none}"
+          rules = """
+body.round1-mode:not(.round1-playing),
+body.round1-mode:not(.round1-playing) #c { cursor: default !important; }
+body.round1-mode.round1-playing #c { cursor: none !important; }
+body.round1-mode:not(.round1-playing) .mobile-controls { pointer-events: none !important; opacity: .18; }
+.round1-start { pointer-events: auto !important; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.round1-hud { cursor: default; }
+"""
+          if 'body.round1-mode:not(.round1-playing)' not in c:
+              assert marker in c, 'round1 CSS tail missing'
+              c = c.replace(marker, marker + rules, 1)
+          css.write_text(c, encoding='utf-8')
+
+          html = Path('game/index.html')
+          h = html.read_text(encoding='utf-8')
+          import re
+          h = re.sub(r'css/style\.css\?v=[^\"]+', 'css/style.css?v=round1-mobile-6', h)
+          h = re.sub(r'js/main\.js\?v=[^\"]+', 'js/main.js?v=round1-mobile-6', h)
+          html.write_text(h, encoding='utf-8')
+      - name: Syntax and invariant checks
+        run: |
+          node --check game/js/main.js
+          node --check game/js/services/peer-room.js
+          node --check game/js/round1-game.js
+          python - <<'PY'
+          from pathlib import Path
+          main=Path('game/js/main.js').read_text(encoding='utf-8')
+          peer=Path('game/js/services/peer-room.js').read_text(encoding='utf-8')
+          css=Path('game/css/style.css').read_text(encoding='utf-8')
+          html=Path('game/index.html').read_text(encoding='utf-8')
+          assert 'function syncRound1InputMode()' in main
+          assert "round1State.phase !== 'countdown'" in main
+          assert 'Peer fallback attempt' in main
+          assert 'PEERJS_SOURCES' in peer and 'unpkg.com/peerjs' in peer
+          assert 'stun:stun.l.google.com:19302' in peer
+          assert 'body.round1-mode:not(.round1-playing)' in css
+          assert 'round1-mobile-6' in html
+          print('input/mobile invariants ok')
+          PY
+      - name: Round 1 logic checks
+        run: |
+          node --input-type=module <<'JS'
+          import { checkpointFor, evaluateCheckpoint, createRoundState, registeredPlayerIds, isRoundParticipant } from './game/js/round1-game.js';
+          const members=[{id:'desktop',joined:true},{id:'mobile',joined:true}];
+          const ids=registeredPlayerIds(members);
+          if(ids.length!==2) throw new Error('queue failed');
+          const state=createRoundState(ids,Date.now(),91);
+          if(!isRoundParticipant(state,'desktop')||!isRoundParticipant(state,'mobile')) throw new Error('participant failed');
+          for(let i=0;i<5;i++){
+            const cp=checkpointFor(i,91);
+            const zone=cp.zones.find(z=>z.year===cp.correctYear);
+            const ok=evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp});
+            if(!ok.pass) throw new Error('checkpoint '+i);
+          }
+          console.log('round1 logic ok');
+          JS
+      - name: Commit repaired game
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/js/main.js game/js/services/peer-room.js game/css/style.css game/index.html
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Fix Round 1 cursor and mobile guest network"
+          git push origin HEAD:main
