@@ -1,0 +1,81 @@
+name: Supabase mobile production smoke
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - supabase-mobile-smoke-trigger.txt
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Test desktop and iPhone guest through Supabase Realtime
+        run: |
+          cat > supabase-mobile-smoke.mjs <<'JS'
+          import { chromium, devices } from 'playwright';
+          const room=`supabase-mobile-${Date.now()}`;
+          const url=`https://life-in-game-independence35.vercel.app/game/?room=${room}`;
+          const browser=await chromium.launch({headless:true,args:['--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader','--disable-dev-shm-usage']});
+          const errors=[];
+          async function guest(context,label){
+            const page=await context.newPage();
+            const sockets=[];
+            page.on('websocket',ws=>sockets.push(ws.url()));
+            page.on('pageerror',e=>errors.push(`${label}:page:${e.message}`));
+            page.on('console',m=>{if(m.type()==='error') errors.push(`${label}:console:${m.text()}`)});
+            await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000});
+            await page.waitForFunction(()=>{
+              const t=document.querySelector('#auth-mode')?.textContent||'';
+              return t && !/Проверяем/.test(t);
+            },null,{timeout:30000});
+            const cfg=await page.evaluate(()=>window.LIFE_IN_GAME_CONFIG||{});
+            if(!String(cfg.supabaseUrl||'').includes('supabase.co')) throw new Error(`${label}: Supabase config missing`);
+            await page.locator('#btn-guest').evaluate(el=>el.click());
+            await page.locator('#screen-character').waitFor({state:'visible',timeout:20000});
+            await page.locator('#btn-start').evaluate(el=>el.click());
+            await page.locator('#round1-hud').waitFor({state:'visible',timeout:30000});
+            await page.waitForFunction(()=>{
+              const btn=document.querySelector('#round1-start');
+              const net=document.querySelector('#players-online')?.textContent||'';
+              return btn && !btn.disabled && /Записаться/.test(btn.textContent||'') && !/ошибка/i.test(net);
+            },null,{timeout:45000});
+            await page.waitForTimeout(1200);
+            return {page,sockets};
+          }
+          const desktopCtx=await browser.newContext({viewport:{width:1440,height:900}});
+          const mobileCtx=await browser.newContext({...devices['iPhone 13']});
+          const d=await guest(desktopCtx,'desktop');
+          const m=await guest(mobileCtx,'mobile');
+          await Promise.all([
+            d.page.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:30000}),
+            m.page.waitForFunction(()=>/Онлайн:\s*2/.test(document.querySelector('#players-online')?.textContent||''),null,{timeout:30000})
+          ]);
+          const allSockets=[...d.sockets,...m.sockets];
+          if(!allSockets.some(u=>u.includes('supabase.co')&&u.includes('realtime'))) throw new Error(`No Supabase Realtime websocket: ${allSockets.join(',')}`);
+          const cursor=await d.page.locator('#c').evaluate(el=>getComputedStyle(el).cursor);
+          if(cursor==='none') throw new Error('Desktop cursor hidden in lobby');
+          await d.page.locator('#round1-start').click();
+          await m.page.locator('#round1-start').tap({timeout:20000});
+          await Promise.all([
+            d.page.waitForFunction(()=>/2\s*\/\s*2/.test(document.querySelector('#round1-counter')?.textContent||'')||/Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:20000}),
+            m.page.waitForFunction(()=>/2\s*\/\s*2/.test(document.querySelector('#round1-counter')?.textContent||'')||/Старт через/.test(document.querySelector('#round1-status')?.textContent||''),null,{timeout:20000})
+          ]);
+          console.log('desktop:',await d.page.locator('#players-online').textContent());
+          console.log('mobile:',await m.page.locator('#players-online').textContent());
+          console.log('supabase sockets:',allSockets.filter(u=>u.includes('supabase.co')).join('\n'));
+          console.log('queue desktop:',await d.page.locator('#round1-counter').textContent());
+          console.log('queue mobile:',await m.page.locator('#round1-counter').textContent());
+          const serious=errors.filter(x=>!x.includes('favicon')&&!x.includes('WebGL')&&!x.includes('ERR_BLOCKED_BY_CLIENT'));
+          if(serious.length) throw new Error('Browser errors:\n'+serious.join('\n'));
+          await desktopCtx.close(); await mobileCtx.close(); await browser.close();
+          console.log('SUPABASE DESKTOP + MOBILE PRODUCTION SMOKE PASSED');
+          JS
+          node supabase-mobile-smoke.mjs
