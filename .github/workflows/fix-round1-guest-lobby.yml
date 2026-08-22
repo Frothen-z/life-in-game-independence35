@@ -1,0 +1,120 @@
+name: Fix Round 1 guest lobby
+on:
+  pull_request:
+    branches: [main]
+    paths: ['p2p-fix-trigger.txt']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch guest lobby and fallback network
+        shell: python
+        run: |
+          from pathlib import Path
+
+          main = Path('game/js/main.js')
+          text = main.read_text(encoding='utf-8')
+
+          old = "import { createRealtimeRoom } from './services/realtime-room.js';"
+          new = old + "\nimport { createPeerFallbackRoom } from './services/peer-room.js';"
+          if "createPeerFallbackRoom" not in text:
+              assert old in text, 'realtime import not found'
+              text = text.replace(old, new, 1)
+
+          old_factory = "cityRoom = createRealtimeRoom({"
+          new_factory = "cityRoom = (supabaseClient ? createRealtimeRoom : createPeerFallbackRoom)({"
+          assert old_factory in text or new_factory in text, 'room factory not found'
+          text = text.replace(old_factory, new_factory, 1)
+
+          old_catch = """      console.error('Supabase realtime failed', e);\n      round1RealtimeReady = false;\n      updateRound1LobbyUI();\n      showToast('Не удалось подключиться к сетевой комнате');\n      if (onlineEl) onlineEl.textContent = 'Сеть недоступна';\n      return;"""
+          new_catch = """      console.error('Supabase realtime failed', e);\n      round1RealtimeReady = false;\n      updateRound1LobbyUI();\n      showToast('Основная сеть недоступна · подключаем резервную P2P-сеть…');\n      if (onlineEl) onlineEl.textContent = 'Сеть: переключение…';"""
+          if old_catch in text:
+              text = text.replace(old_catch, new_catch, 1)
+
+          old_offline = """  round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];\n  round1HostId = playerId;\n  round1RealtimeReady = false;\n  updateRound1LobbyUI();\n  showToast('Сетевой режим недоступен: не получены настройки Supabase');\n  if (onlineEl) onlineEl.textContent = 'Сеть не настроена';\n}"""
+          new_offline = """  try {\n    await connectSupabaseMultiplayer(roomId);\n    showToast('Гостевая P2P-сеть готова · запишитесь на Раунд 1');\n    if (onlineEl) onlineEl.textContent = `Онлайн: ${Math.max(1, round1MemberIds().length)} · P2P`;\n    return;\n  } catch (peerError) {\n    console.error('Peer fallback failed', peerError);\n    round1Members = [{ id: playerId, key: playerId, name: currentUser?.name || 'Игрок', joined: false }];\n    round1HostId = playerId;\n    round1RealtimeReady = false;\n    resetLocalRound1Flags();\n    updateRound1LobbyUI();\n    showToast('Не удалось подключиться к сетевой комнате. Проверьте интернет и обновите страницу.');\n    if (onlineEl) onlineEl.textContent = 'Сеть: ошибка подключения';\n  }\n}"""
+          assert old_offline in text or 'Peer fallback failed' in text, 'offline block not found'
+          text = text.replace(old_offline, new_offline, 1)
+
+          old_status = "status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED'"
+          new_status = "status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CONNECTING' || status === 'RECONNECTING'"
+          text = text.replace(old_status, new_status)
+
+          text = text.replace(
+              "supabaseClient ? 'Подключение к сетевой комнате…' : 'Сетевой режим не настроен. Проверьте Supabase runtime config.'",
+              "'Подключение к сетевой комнате…'"
+          )
+
+          main.write_text(text, encoding='utf-8')
+
+          css = Path('game/css/style.css')
+          c = css.read_text(encoding='utf-8')
+          marker = '.round1-waiting strong{display:block;color:#fca5a5;font-size:18px}'
+          if '.round1-waiting.hidden{display:none!important}' not in c:
+              assert marker in c, 'round1 waiting CSS marker missing'
+              c = c.replace(marker, '.round1-waiting.hidden{display:none!important}\n' + marker, 1)
+          css.write_text(c, encoding='utf-8')
+
+          html = Path('game/index.html')
+          h = html.read_text(encoding='utf-8')
+          h = h.replace('css/style.css?v=round1-1', 'css/style.css?v=round1-peer-4')
+          h = h.replace('js/main.js?v=round1-guest-2', 'js/main.js?v=round1-peer-4')
+          html.write_text(h, encoding='utf-8')
+      - name: Syntax and invariant checks
+        run: |
+          node --check game/js/main.js
+          node --check game/js/services/peer-room.js
+          node --check game/js/round1-game.js
+          python - <<'PY'
+          from pathlib import Path
+          main = Path('game/js/main.js').read_text(encoding='utf-8')
+          css = Path('game/css/style.css').read_text(encoding='utf-8')
+          html = Path('game/index.html').read_text(encoding='utf-8')
+          assert "createPeerFallbackRoom" in main
+          assert "supabaseClient ? createRealtimeRoom : createPeerFallbackRoom" in main
+          assert "Peer fallback failed" in main
+          assert "Сетевой режим не настроен. Проверьте Supabase runtime config." not in main
+          assert ".round1-waiting.hidden{display:none!important}" in css
+          assert "round1-peer-4" in html
+          print('guest lobby invariants ok')
+          PY
+      - name: Round 1 logic checks
+        run: |
+          node --input-type=module <<'JS'
+          import { checkpointFor, evaluateCheckpoint, createRoundState, registeredPlayerIds, isRoundParticipant } from './game/js/round1-game.js';
+          const members = [
+            {id:'g_a', joined:true},
+            {id:'g_b', joined:true},
+            {id:'g_c', joined:false}
+          ];
+          const ids = registeredPlayerIds(members);
+          if (ids.length !== 2) throw new Error('queue count failed');
+          const state = createRoundState(ids, 1000, 77);
+          if (!isRoundParticipant(state, 'g_a') || isRoundParticipant(state, 'g_c')) throw new Error('participant isolation failed');
+          for (let i=0;i<5;i++) {
+            const cp = checkpointFor(i, 77);
+            const zone = cp.zones.find(z => z.year === cp.correctYear);
+            const ok = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:0,checkpoint:cp});
+            if (!ok.pass) throw new Error('checkpoint '+i+' correct answer failed');
+            const moved = evaluateCheckpoint({x:zone.x,z:zone.z,movedDistance:.4,checkpoint:cp});
+            if (moved.pass || moved.reason !== 'movement') throw new Error('movement elimination failed');
+          }
+          console.log('round1 logic ok');
+          JS
+      - name: Commit repaired game
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/js/main.js game/js/services/peer-room.js game/css/style.css game/index.html
+          if git diff --cached --quiet; then
+            echo "No game changes"
+            exit 0
+          fi
+          git commit -m "Fix guest lobby and add P2P fallback"
+          git push origin HEAD:main
