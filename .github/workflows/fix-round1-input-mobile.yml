@@ -17,7 +17,7 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Apply full Round 1 flow repair
-        run: python tools/fix_round1_flow_v10.py
+        run: python tools/run_round1_flow_v10.py
       - name: Syntax and invariant checks
         run: |
           node --check game/js/main.js
@@ -36,7 +36,8 @@ jobs:
           assert all(x in html for x in ['id="reg-name"','id="reg-email"','id="reg-pass"','id="round1-cancel"'])
           assert 'round1-flow-10' in html
           assert 'ROUND1_FLOW_V10' in css and '100dvh' in css
-          assert 'createInternalUsername' in auth and 'Такой логин уже занят' not in auth
+          assert 'createInternalUsername' in auth and 'const PHOTO_TYPES = new Map' in auth
+          assert 'Такой логин уже занят' not in auth
           assert 'round1GuestRealtimeClient' in main and 'persistSession: false' in main
           assert 'round1JoinedAt' in main and 'Начать игру · ${queued.length}' in main
           assert 'startRound1Match(fresh.slice' not in main
