@@ -16,7 +16,9 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Apply repair
-        run: python tools/fix_round1_input_mobile.py
+        run: |
+          python tools/fix_round1_input_mobile.py
+          python tools/fix_round1_cursor.py
       - name: Syntax and invariant checks
         run: |
           node --check game/js/main.js
@@ -33,8 +35,10 @@ jobs:
           assert 'PEERJS_SOURCES' in peer and 'unpkg.com/peerjs' in peer
           assert 'stun:stun.l.google.com:19302' in peer
           assert 'body.round1-mode:not(.round1-playing)' in css
-          assert 'round1-mobile-6' in html
-          print('input/mobile invariants ok')
+          canvas=css.split('#c {',1)[1].split('}',1)[0]
+          assert 'cursor: default;' in canvas and 'cursor: none;' not in canvas
+          assert 'round1-mobile-7' in html
+          print('input/mobile/cursor invariants ok')
           PY
       - name: Round 1 logic checks
         run: |
