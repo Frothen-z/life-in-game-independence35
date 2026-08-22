@@ -1,0 +1,5 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "python3 tools/fix_round1_flow_v10.py && node --check game/js/main.js && node --check game/js/round1-game.js && node --check game/js/services/auth-service.js && rm -rf dist && mkdir -p dist && cp -R index.html favicon.svg SETTINGS_HERE.js game dist/",
+  "outputDirectory": "dist"
+}
