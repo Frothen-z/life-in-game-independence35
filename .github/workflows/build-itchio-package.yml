@@ -1,0 +1,54 @@
+name: Build itch.io package
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - itchio-build-trigger.txt
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Build standalone itch.io HTML5 package
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/itchio
+          cp index.html dist/itchio/index.html
+          cp SETTINGS_HERE.js dist/itchio/SETTINGS_HERE.js
+          cp favicon.svg dist/itchio/favicon.svg
+          cp -a game dist/itchio/game
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('dist/itchio/index.html')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('allow="camera; microphone; display-capture; fullscreen; clipboard-write"', 'allow="camera; microphone; display-capture; fullscreen; clipboard-write; autoplay; gamepad" allowfullscreen')
+          p.write_text(s, encoding='utf-8')
+          PY
+          test -f dist/itchio/index.html
+          test -f dist/itchio/game/index.html
+          test -f dist/itchio/game/js/main.js
+          test -f dist/itchio/game/models/model.glb
+          du -sh dist/itchio
+          cd dist/itchio
+          zip -r -9 ../life_in_game_itchio_full.zip .
+          cd ../..
+          unzip -l dist/life_in_game_itchio_full.zip | head -40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: life_in_game_itchio_full
+          path: dist/life_in_game_itchio_full.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
