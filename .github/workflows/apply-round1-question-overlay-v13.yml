@@ -1,0 +1,50 @@
+name: Apply Round 1 question overlay v13
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - round1-question-overlay-trigger.txt
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply question overlay patch
+        run: python tools/apply_round1_question_overlay_v13.py
+      - name: Verify syntax and behavior invariants
+        run: |
+          node --check game/js/main.js
+          node --check game/js/round1-game.js
+          python - <<'PY'
+          from pathlib import Path
+          html = Path('game/index.html').read_text(encoding='utf-8')
+          css = Path('game/css/style.css').read_text(encoding='utf-8')
+          main = Path('game/js/main.js').read_text(encoding='utf-8')
+          game = Path('game/js/round1-game.js').read_text(encoding='utf-8')
+          assert 'id="round1-question-overlay"' in html
+          assert 'id="round1-question-overlay-text"' in html
+          assert 'id="round1-question-overlay-timer"' in html
+          assert 'round1-question-13' in html
+          assert 'ROUND1_QUESTION_OVERLAY_V13' in css
+          assert 'function updateRound1QuestionOverlay' in main
+          assert "phase === 'countdown'" in main
+          assert "overlay.classList.toggle('hidden', !shouldShow)" in main
+          assert 'ROUND1_COUNTDOWN_MS = 15000' in game
+          print('Round 1 question overlay checks passed')
+          PY
+      - name: Commit game changes
+        run: |
+          git config user.name "Frothen-z"
+          git config user.email "frothen234@gmail.com"
+          git add game/index.html game/css/style.css game/js/main.js
+          git diff --cached --stat
+          if git diff --cached --quiet; then echo "No game changes"; exit 0; fi
+          git commit -m "Restore timed Round 1 question overlay"
+          git push origin HEAD:main
