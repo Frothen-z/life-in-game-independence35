@@ -1034,6 +1034,7 @@ function setupRound1UI() {
   round1CancelButton = document.getElementById('round1-cancel');
   round1WaitingNotice = document.getElementById('round1-waiting');
   round1WaitingNotice?.classList.add('hidden');
+  document.getElementById('round1-question-overlay')?.classList.add('hidden');
   round1Hud?.classList.remove('hidden');
 
   if (round1StartButton && !round1StartButton.dataset.round1Bound) {
@@ -1365,6 +1366,7 @@ function resetRound1ToLobby({ broadcast = false, message = '' } = {}) {
   round1HostTimer = 0;
   round1State = null;
   document.body.classList.remove('round1-match-active');
+  document.getElementById('round1-question-overlay')?.classList.add('hidden');
   round1Joined = false;
   round1JoinedAt = 0;
   resetLocalRound1Flags();
@@ -1405,12 +1407,35 @@ function setRound1Status(text, mode = '') {
   round1Status.textContent = text;
 }
 
+function updateRound1QuestionOverlay(checkpoint, phase, now = Date.now()) {
+  const overlay = document.getElementById('round1-question-overlay');
+  if (!overlay) return;
+  const localParticipant = Boolean(round1State && isRoundParticipant(round1State, playerId));
+  const shouldShow = Boolean(
+    round1State &&
+    localParticipant &&
+    !round1IsSpectator &&
+    phase === 'countdown'
+  );
+  overlay.classList.toggle('hidden', !shouldShow);
+  if (!shouldShow) return;
+
+  const seconds = Math.max(0, Math.ceil((Number(round1State.phaseEndsAt || 0) - now) / 1000));
+  const meta = document.getElementById('round1-question-overlay-meta');
+  const text = document.getElementById('round1-question-overlay-text');
+  const timer = document.getElementById('round1-question-overlay-timer');
+  if (meta) meta.textContent = `Вопрос ${round1State.checkpointIndex + 1} из ${ROUND1_QUESTIONS.length}`;
+  if (text) text.textContent = checkpoint?.question || '';
+  if (timer) timer.textContent = String(seconds);
+}
+
 function refreshRound1Visuals(now = Date.now()) {
   if (!round1State) return;
   const phase = round1State.phase;
   const checkpoint = checkpointFor(round1State.checkpointIndex, round1State.seed);
   const total = ROUND1_QUESTIONS.length;
   const localParticipant = isRoundParticipant(round1State, playerId);
+  updateRound1QuestionOverlay(checkpoint, phase, now);
   if (!localParticipant && phase !== 'finished') {
     round1WaitingNotice?.classList.add('hidden');
     if (round1Counter) round1Counter.textContent = `Участников: ${(round1State.participantIds || []).length}`;

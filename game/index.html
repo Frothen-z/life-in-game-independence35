@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Life in Game</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css?v=round1-cleanhud-12">
+  <link rel="stylesheet" href="css/style.css?v=round1-question-13">
   <script type="importmap">
   {
     "imports": {
@@ -217,6 +217,11 @@
       <button type="button" id="round1-start" class="round1-start hidden">Записаться на участие</button>
       <button type="button" id="round1-cancel" class="round1-cancel hidden">Отменить запись</button>
     </section>
+    <div id="round1-question-overlay" class="round1-question-overlay hidden" aria-live="polite">
+      <div class="round1-question-overlay-meta" id="round1-question-overlay-meta">Вопрос 1 из 5</div>
+      <div class="round1-question-overlay-text" id="round1-question-overlay-text">Вопрос</div>
+      <div class="round1-question-overlay-timer" id="round1-question-overlay-timer">15</div>
+    </div>
     <div id="round1-waiting" class="round1-waiting hidden">
       <strong>Режим наблюдателя</strong>
       <span>Вы выбыли, но остаётесь в матче как зритель. Камера следит за игровой площадкой.</span>
@@ -439,6 +444,6 @@
 
   <canvas id="c"></canvas>
   <script src="../SETTINGS_HERE.js?v=supabase-live-1"></script>
-  <script type="module" src="js/main.js?v=round1-cleanhud-12"></script>
+  <script type="module" src="js/main.js?v=round1-question-13"></script>
 </body>
 </html>
